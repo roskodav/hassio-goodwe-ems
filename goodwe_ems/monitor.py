@@ -13,6 +13,8 @@ from pathlib import Path
 
 import goodwe
 
+import logic
+
 try:
     import ha_bridge
 except Exception:
@@ -59,6 +61,9 @@ FIELDS = [
     "grid_mode_label",
     "grid_in_out_label",
     "meter_active_power_total",
+    "meter_active_power1",
+    "meter_active_power2",
+    "meter_active_power3",
     "active_power_total",
     "pbattery1",
     "battery_mode_label",
@@ -125,6 +130,8 @@ class MonitorState:
                 "last_write_at": None,
                 "last_write_result": None,
             },
+            "savings": {"date": None, "grid_cost_today_czk": 0.0},
+            "stats": {"restarts": 0, "actions_total": 0, "first_boot": None, "grid_cost_total_czk": 0.0},
         }
 
     def snapshot(self):
@@ -134,6 +141,9 @@ class MonitorState:
             plan = build_control_plan(samples)
             plan["mode"] = "apply" if status.get("apply_enabled") else "dry-run"
             plan["controller"] = dict(status.get("controller", {}))
+            prices = price.snapshot() if price else {}
+            latest = samples[-1] if samples else None
+            extras = compute_extras(latest, prices)
             return {
                 "status": status,
                 "inverters": [
@@ -141,10 +151,15 @@ class MonitorState:
                     for spec in INVERTERS
                 ],
                 "samples": samples,
-                "latest": samples[-1] if samples else None,
+                "latest": latest,
                 "analysis": analyze_window(samples),
                 "control_plan": plan,
-                "prices": price.snapshot() if price else {},
+                "prices": prices,
+                "advice": extras["advice"],
+                "self_sufficiency": extras["self_sufficiency"],
+                "phases": extras["phases"],
+                "savings": status.get("savings", {}),
+                "stats": status.get("stats", {}),
             }
 
     def add_sample(self, sample):
@@ -193,9 +208,28 @@ class MonitorState:
         with self.lock:
             return dict(self.status["controller"])
 
+    def accumulate(self, sample, interval_s, price_now):
+        """Accumulate grid electricity cost (today + cumulative) from spot price."""
+        with self.lock:
+            today = datetime.now().date().isoformat()
+            sv = self.status.get("savings") or {}
+            if sv.get("date") != today:
+                sv = {"date": today, "grid_cost_today_czk": 0.0}
+            gw20 = (sample.get("readings") or {}).get("gw20", {})
+            meter = as_number(gw20.get("meter_active_power_total"))
+            cost = logic.interval_cost_czk(meter, price_now, interval_s)
+            sv["grid_cost_today_czk"] = round(sv.get("grid_cost_today_czk", 0.0) + cost, 4)
+            self.status["savings"] = sv
+            st = self.status.get("stats") or {}
+            st["grid_cost_total_czk"] = round(st.get("grid_cost_total_czk", 0.0) + cost, 4)
+            self.status["stats"] = st
+
     def record_write(self, result):
         with self.lock:
             self.status["write_count"] += 1
+            st = self.status.get("stats") or {}
+            st["actions_total"] = st.get("actions_total", 0) + 1
+            self.status["stats"] = st
             controller = dict(self.status["controller"])
             controller["last_write_at"] = datetime.now().isoformat(timespec="seconds")
             controller["last_write_result"] = result
@@ -573,48 +607,23 @@ def valid_samples(samples):
 
 
 def classify_energy_state(sample):
-    gw10 = sample.get("readings", {}).get("gw10", {})
-    gw20 = sample.get("readings", {}).get("gw20", {})
-    gw10_bat = as_number(gw10.get("pbattery1"))
-    gw20_bat = as_number(gw20.get("pbattery1"))
-    gw10_mode = str(gw10.get("battery_mode_label") or "").lower()
-    gw20_mode = str(gw20.get("battery_mode_label") or "").lower()
-    if gw10_bat is None or gw20_bat is None:
-        return "unknown"
-    gw10_discharge = gw10_mode == "discharge" and abs(gw10_bat) > 300
-    gw10_charge = gw10_mode == "charge" and abs(gw10_bat) > 300
-    gw20_discharge = gw20_mode == "discharge" and abs(gw20_bat) > 300
-    gw20_charge = gw20_mode == "charge" and abs(gw20_bat) > 300
-    if gw10_discharge and gw20_charge:
-        return "gw10_to_gw20"
-    if gw20_discharge and gw10_charge:
-        return "gw20_to_gw10"
-    if gw10_discharge and gw20_discharge:
-        return "both_discharge"
-    if gw10_charge and gw20_charge:
-        return "both_charge"
-    return "normal"
+    # Single source of truth lives in logic.py (unit tested).
+    return logic.classify_energy_state(sample)
+
+
+def _assist_cfg():
+    return {
+        "gw20_soc_max": ASSIST_GW20_SOC_MAX,
+        "gw10_floor": ASSIST_GW10_SOC_FLOOR,
+        "soc_gap": ASSIST_SOC_GAP,
+        "gw20_discharge_w": ASSIST_GW20_DISCHARGE_W,
+        "import_min": ASSIST_IMPORT_MIN,
+    }
 
 
 def classify_assist(sample):
-    """True when GW20 is overworked (low SOC, discharging near max) while GW10 is
-    much fuller and the site is importing — i.e. GW10 should help discharge."""
-    g10 = sample.get("readings", {}).get("gw10", {})
-    g20 = sample.get("readings", {}).get("gw20", {})
-    s10 = as_number(g10.get("battery_soc"))
-    s20 = as_number(g20.get("battery_soc"))
-    b20 = as_number(g20.get("pbattery1"))
-    m20 = str(g20.get("battery_mode_label") or "").lower()
-    meter20 = as_number(g20.get("meter_active_power_total"))
-    if None in (s10, s20, b20, meter20):
-        return None
-    importing = -meter20  # meter negative == importing from grid
-    gw20_hard_discharge = m20 == "discharge" and abs(b20) >= ASSIST_GW20_DISCHARGE_W
-    if (s20 <= ASSIST_GW20_SOC_MAX and s10 >= ASSIST_GW10_SOC_FLOOR
-            and (s10 - s20) >= ASSIST_SOC_GAP and gw20_hard_discharge
-            and importing >= ASSIST_IMPORT_MIN):
-        return True
-    return False
+    """True when GW20 is overworked while GW10 is much fuller and the site imports."""
+    return logic.assist_needed(sample, _assist_cfg())
 
 
 def assist_should_stop(sample):
@@ -765,6 +774,11 @@ async def monitor_loop(interval, apply_enabled=False, auto_restore=True):
             )
             STATE.add_sample(sample)
             append_csv(sample)
+            price_now = (price.snapshot() or {}).get("now") if price else None
+            STATE.accumulate(sample, interval, price_now)
+            _cycle[0] += 1
+            if _cycle[0] % 60 == 0:
+                save_persisted_stats(STATE.status.get("stats"))
             STATE.set_error(None)
         except Exception as exc:
             STATE.set_error(f"{type(exc).__name__}: {exc}")
@@ -811,6 +825,81 @@ def append_csv(sample):
         ])
 
 
+STATS_PATH = DATA_DIR / "stats.json"
+_cycle = [0]
+
+
+def compute_extras(latest, prices):
+    """Derive price advice, self-sufficiency and per-phase breakdown for the API."""
+    advice = logic.price_advice((prices or {}).get("level"))
+    self_suff = None
+    phases = None
+    if latest:
+        readings = latest.get("readings") or {}
+        phases = logic.phase_breakdown(readings)
+        pv = 0.0
+        disch = 0.0
+        for inv in ("gw10", "gw20"):
+            r = readings.get(inv) or {}
+            pv += as_number(r.get("ppv")) or 0.0
+            mode, mag = logic.battery_dir(r)
+            if mode == "discharge" and mag:
+                disch += mag
+        # both meters may read the same grid point; use the master (GW20) for import.
+        imp = logic.grid_import_w(readings.get("gw20") or {}) or 0.0
+        self_suff = logic.self_sufficiency_pct(pv, disch, imp)
+    return {"advice": advice, "self_sufficiency": self_suff, "phases": phases}
+
+
+def load_persisted_stats():
+    try:
+        with STATS_PATH.open(encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def save_persisted_stats(stats):
+    try:
+        with STATS_PATH.open("w", encoding="utf-8") as fh:
+            json.dump(stats or {}, fh)
+    except Exception:
+        pass
+
+
+def read_action_rows():
+    if not ACTION_LOG_PATH.exists():
+        return []
+    try:
+        with ACTION_LOG_PATH.open(encoding="utf-8") as fh:
+            return list(csv.DictReader(fh))
+    except Exception:
+        return []
+
+
+def read_history(max_rows=17280, buckets=288):
+    """Downsampled series from samples.csv for the 24h charts."""
+    if not LOG_PATH.exists():
+        return {}
+    try:
+        with LOG_PATH.open(encoding="utf-8") as fh:
+            rows = list(csv.DictReader(fh))
+    except Exception:
+        return {}
+    rows = logic.downsample(rows[-max_rows:], buckets)
+
+    def col(name):
+        return [as_number(x.get(name)) for x in rows]
+
+    return {
+        "time": [x.get("time") for x in rows],
+        "gw10_battery": col("gw10_battery_w"),
+        "gw20_battery": col("gw20_battery_w"),
+        "gw10_meter": col("gw10_meter_w"),
+        "gw20_meter": col("gw20_meter_w"),
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
@@ -850,6 +939,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/state":
             self.send_json(STATE.snapshot())
+            return
+        if self.path == "/api/history":
+            self.send_json(read_history())
+            return
+        if self.path == "/api/actions":
+            self.send_json(logic.action_log_summary(read_action_rows()))
             return
         if self.path == "/api/log":
             if not LOG_PATH.exists():
@@ -899,6 +994,15 @@ def main():
         help="Keep GW10 in BATTERY_STANDBY after applying until manually changed.",
     )
     args = parser.parse_args()
+
+    persisted = load_persisted_stats()
+    STATE.status["stats"] = {
+        "restarts": persisted.get("restarts", 0) + 1,
+        "first_boot": persisted.get("first_boot") or iso_now(),
+        "actions_total": len(read_action_rows()),
+        "grid_cost_total_czk": persisted.get("grid_cost_total_czk", 0.0),
+    }
+    save_persisted_stats(STATE.status["stats"])
 
     if ha_bridge is not None and os.environ.get("HA_URL") and os.environ.get("HA_TOKEN"):
         if ha_bridge.start(STATE, INVERTERS):

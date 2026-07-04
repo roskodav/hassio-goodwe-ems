@@ -7,7 +7,7 @@ RUN apk add --no-cache python3 py3-pip \
 
 ENV PYTHONUNBUFFERED=1 DATA_DIR=/data
 WORKDIR /app
-COPY monitor.py ha_bridge.py price.py ./
+COPY monitor.py ha_bridge.py price.py logic.py ./
 COPY static ./static
 
 # Bypass the base image's s6 init and run our server directly (init: false in config.yaml).

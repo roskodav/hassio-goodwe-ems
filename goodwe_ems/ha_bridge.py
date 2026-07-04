@@ -114,6 +114,51 @@ def _push_once(base, token, snap):
     return ok, fail
 
 
+_notify_state = {}
+
+
+def _call_service(base, token, domain, service, data):
+    url = f"{base}/api/services/{domain}/{service}"
+    body = json.dumps(data).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=6) as resp:
+        return resp.status
+
+
+def _notify(base, token, nid, title, message, active):
+    """Create a persistent notification on rising edge, dismiss on falling edge."""
+    prev = _notify_state.get(nid, False)
+    try:
+        if active and not prev:
+            _call_service(base, token, "persistent_notification", "create",
+                          {"notification_id": nid, "title": title, "message": message})
+        elif not active and prev:
+            _call_service(base, token, "persistent_notification", "dismiss",
+                          {"notification_id": nid})
+    except Exception:
+        pass
+    _notify_state[nid] = active
+
+
+def _maybe_notify(base, token, snap):
+    states = (snap.get("analysis") or {}).get("states") or {}
+    conflict = (states.get("gw10_to_gw20", 0) + states.get("gw20_to_gw10", 0)) >= 1
+    _notify(base, token, "goodwe_ems_conflict", "GoodWe EMS: přelévání baterií",
+            "GW10 a GW20 si přelévají energii mezi bateriemi — koordinátor zasahuje.", conflict)
+
+    readings = (snap.get("latest") or {}).get("readings") or {}
+    low = False
+    for inv in ("gw10", "gw20"):
+        soc = _num((readings.get(inv) or {}).get("battery_soc"))
+        if soc is not None and soc < 15:
+            low = True
+    _notify(base, token, "goodwe_ems_low_soc", "GoodWe EMS: nízké SOC baterie",
+            "Některá baterie klesla pod 15 %.", low)
+
+
 def start(state, inverters=None):
     base = os.environ.get("HA_URL", "").rstrip("/")
     token = os.environ.get("HA_TOKEN", "")
@@ -123,7 +168,9 @@ def start(state, inverters=None):
     def loop():
         while True:
             try:
-                _push_once(base, token, state.snapshot())
+                snap = state.snapshot()
+                _push_once(base, token, snap)
+                _maybe_notify(base, token, snap)
             except Exception:
                 pass
             time.sleep(PUSH_INTERVAL)
