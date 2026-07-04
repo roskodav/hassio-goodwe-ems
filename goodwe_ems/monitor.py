@@ -213,9 +213,9 @@ def decide(sample):
         recommended = "limit_gw10_discharge"
         notes.append("GW10 is discharging while GW20 is charging. This looks like battery-to-battery transfer through AC.")
     elif gw20_discharge and gw10_charge:
-        severity = "warn"
+        severity = "critical"
         recommended = "limit_gw10_charge"
-        notes.append("GW20 is carrying the site while GW10 is charging. Check whether GW10 is reacting to cascaded meter flow.")
+        notes.append("GW20 is discharging while GW10 charges — battery-to-battery shuttling. GW10 should defer to GW20 (Delta Green master).")
     elif gw20_discharge and abs(gw10_bat) < 150:
         severity = "ok"
         recommended = "keep_gw20_master"
@@ -366,7 +366,8 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
 
     cooldown = seconds_since_iso(controller.get("last_write_at"))
     in_cooldown = cooldown is not None and cooldown < WRITE_COOLDOWN_SECONDS
-    stable_conflict = len(recent_conflict) >= CONFLICT_APPLY_SAMPLES and conflict_counts.get("gw10_to_gw20", 0) == CONFLICT_APPLY_SAMPLES
+    shuttle_count = conflict_counts.get("gw10_to_gw20", 0) + conflict_counts.get("gw20_to_gw10", 0)
+    stable_conflict = len(recent_conflict) >= CONFLICT_APPLY_SAMPLES and shuttle_count == CONFLICT_APPLY_SAMPLES
     stable_clear = (
         len(recent_clear) >= CLEAR_RESTORE_SAMPLES
         and clear_counts.get("gw10_to_gw20", 0) == 0
@@ -377,7 +378,7 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
         STATE.update_controller(state="gw10_standby", standby_since=iso_now())
 
     if stable_conflict:
-        reason = f"{CONFLICT_APPLY_SAMPLES}/{CONFLICT_APPLY_SAMPLES} latest valid samples show GW10 discharge while GW20 charges."
+        reason = f"{CONFLICT_APPLY_SAMPLES}/{CONFLICT_APPLY_SAMPLES} latest valid samples show battery-to-battery shuttling between GW10 and GW20 (either direction). GW10 defers to GW20 (Delta Green master)."
         if current_mode == GW10_BATTERY_STANDBY:
             STATE.update_controller(state="gw10_standby")
             return make_control_result("apply" if apply_enabled else "dry-run", "standby", "already_applied", reason, current_mode, GW10_BATTERY_STANDBY)
@@ -546,11 +547,11 @@ def build_control_plan(samples):
         plan["blocked_by"].append("Need at least 6 valid samples after communication recovered.")
         return plan
 
-    if states.get("gw10_to_gw20", 0) >= 2:
-        plan["reason"].append("Recent samples show GW10 discharging while GW20 charges, which is likely battery-to-battery transfer.")
-        plan["would_do"].append("Keep GW20 as master reference.")
-        plan["would_do"].append("Set GW10 EMS mode to BATTERY_STANDBY while GW20 is charging from GW10 discharge.")
-        plan["would_do"].append("Restore GW10 EMS mode to AUTO only after GW20 is no longer charging and grid/meter readings are stable.")
+    if states.get("gw10_to_gw20", 0) + states.get("gw20_to_gw10", 0) >= 2:
+        plan["reason"].append("Recent samples show battery-to-battery shuttling between GW10 and GW20 (either direction).")
+        plan["would_do"].append("Keep GW20 as master — Delta Green controls it; never write GW20.")
+        plan["would_do"].append("Pause GW10 (BATTERY_STANDBY) so it defers to GW20 and stops shuttling.")
+        plan["would_do"].append("Restore GW10 to AUTO once the batteries are no longer opposed and readings are stable.")
         plan["exact_dry_run_writes"].append(
             {"ip": "10.0.1.10", "setting": "ems_mode", "current": "AUTO (1)", "would_set": "BATTERY_STANDBY (8)"}
         )
