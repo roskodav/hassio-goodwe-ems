@@ -1,5 +1,5 @@
 name: GoodWe EMS Koordinátor
-version: "1.1.1"
+version: "1.2.0"
 slug: goodwe_ems
 description: >-
   Koordinace dvou GoodWe hybridů (GW20 master / GW10 sekundární) s kaskádovým
@@ -27,8 +27,10 @@ options:
   gw20_ip: "10.0.1.76"
   apply: true
   interval: 5
+  assist: true
 schema:
   gw10_ip: str
   gw20_ip: str
   apply: bool
   interval: int(1,60)
+  assist: bool

@@ -132,7 +132,8 @@
         <p><b>Problém.</b> Oba jedou v režimu <b>AUTO / self‑use</b> a každý se sám snaží držet nulu na svém elektroměru. V noci se stane, že <b>GW10 vybíjí</b> svoji baterii, <b>GW20</b> to vyhodnotí jako přebytek a <b>nabíjí</b> si svoji baterii. Energie zbytečně teče z jedné baterie do druhé přes AC se ztrátami (round‑trip cca 20–30 %).</p>
         <p><b>Co dělá tento koordinátor.</b> <b>GW20 řídí Delta Green</b> (agregátor) — toho se nedotýkáme, jen ho čteme jako referenci. <b>GW10 „následuje“ GW20:</b> kdykoli by baterie GW10 tekla proti GW20 (jeden nabíjí, druhý vybíjí = přelévání, v obou směrech), přepne koordinátor <b>GW10 do BATTERY_STANDBY</b>; jinak jede GW10 vlastní self-use. Je to <b>totéž nastavení jako v SolarGo</b> (EMS Mód, registr 47511) — bezpečné a vratné. Píše se <b>jen do GW10, nikdy do GW20</b>. Po 12 klidných vzorcích a min. 15 min vrátí GW10 zpět do AUTO.</p>
         <div class="pill-row">
-          <span class="tag">Zapisuje jen: EMS mód GW10 &nbsp;AUTO (1) ⇄ STANDBY (8)</span>
+          <span class="tag">Zapisuje jen: EMS mód GW10 &nbsp;AUTO ⇄ STANDBY ⇄ DISCHARGE</span>
+          <span class="tag">Sdílení zátěže: GW10 pomůže vybíjet, když je GW20 nízko a plný GW10 zahálí</span>
           <span class="tag">Nesahá na: grid code, zálohu, firmware, GW20</span>
           <span class="tag">Při výpadku komunikace: nezapisuje nic</span>
           <span class="tag">Po zápisu ověří + 5 min cooldown</span>
@@ -496,6 +497,9 @@
       } else if (ctl.state === "gw10_standby") {
         banner.className = "banner ok";
         banner.textContent = "GW10 je držen v režimu STANDBY, aby nepřeléval energii do GW20. Po stabilizaci se vrátí do AUTO.";
+      } else if (ctl.state === "gw10_assist") {
+        banner.className = "banner ok";
+        banner.textContent = "GW20 je nízko a maká na doraz → GW10 pomáhá vybíjením (sdílení zátěže). Vrátí se do AUTO, až GW20 nabere nebo přestane import.";
       } else {
         banner.className = "banner";
       }
@@ -526,8 +530,9 @@
 
       const emsTxt = ctl.gw10_ems_mode === 1 ? "AUTO (1)"
         : ctl.gw10_ems_mode === 8 ? "STANDBY (8)"
+        : ctl.gw10_ems_mode === 3 ? "DISCHARGE (3)"
         : (ctl.gw10_ems_mode ?? "—");
-      const stateCz = { monitoring: "sleduji", gw10_standby: "GW10 ve STANDBY" };
+      const stateCz = { monitoring: "sleduji", gw10_standby: "GW10 ve STANDBY", gw10_assist: "GW10 pomáhá (vybíjí)" };
       document.getElementById("ctlMode").textContent = apply ? "OSTRÝ (zapisuje)" : "SIMULACE";
       document.getElementById("ctlState").textContent = stateCz[ctl.state] || ctl.state || "—";
       document.getElementById("ctlEms").textContent = emsTxt;

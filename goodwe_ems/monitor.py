@@ -52,7 +52,26 @@ CLEAR_RESTORE_SAMPLES = 12
 MIN_STANDBY_SECONDS = 15 * 60
 WRITE_COOLDOWN_SECONDS = 5 * 60
 GW10_AUTO = 1
+GW10_DISCHARGE = 3  # EMSMode.DISCHARGE_PV — force GW10 to discharge (load-share assist)
 GW10_BATTERY_STANDBY = 8
+
+
+def _envf(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+# --- SOC-balance assist: GW10 helps when GW20 is overworked ---
+ASSIST_ENABLED = str(os.environ.get("EMS_ASSIST", "true")).strip().lower() in {"1", "true", "yes", "on"}
+ASSIST_GW20_SOC_MAX = _envf("EMS_ASSIST_GW20_SOC", 40)          # GW20 SOC at/below this
+ASSIST_GW10_SOC_FLOOR = _envf("EMS_ASSIST_GW10_FLOOR", 40)      # GW10 must stay above this
+ASSIST_SOC_GAP = _envf("EMS_ASSIST_SOC_GAP", 20)               # GW10 this much fuller than GW20
+ASSIST_GW20_DISCHARGE_W = _envf("EMS_ASSIST_GW20_DISCHARGE_W", 8000)  # GW20 discharging >= this
+ASSIST_IMPORT_MIN = _envf("EMS_ASSIST_IMPORT_MIN", 400)        # site importing >= this to start
+ASSIST_IMPORT_STOP = _envf("EMS_ASSIST_IMPORT_STOP", 150)      # safety-stop below this import
+ASSIST_GW20_SOC_RECOVER = _envf("EMS_ASSIST_GW20_RECOVER", 45)  # stop once GW20 recovers to this
 
 
 class MonitorState:
@@ -374,6 +393,20 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
         and clear_counts.get("gw20_to_gw10", 0) == 0
     )
 
+    valids = valid_samples(samples)
+    latest_valid = valids[-1] if valids else None
+    assist_window = valids[-CONFLICT_APPLY_SAMPLES:]
+    stable_assist = (
+        ASSIST_ENABLED
+        and len(assist_window) >= CONFLICT_APPLY_SAMPLES
+        and all(classify_assist(s) is True for s in assist_window)
+    )
+    assist_clear_window = valids[-CLEAR_RESTORE_SAMPLES:]
+    assist_cleared = (
+        len(assist_clear_window) >= CLEAR_RESTORE_SAMPLES
+        and all(classify_assist(s) is False for s in assist_clear_window)
+    )
+
     if current_mode == GW10_BATTERY_STANDBY and not controller.get("standby_since"):
         STATE.update_controller(state="gw10_standby", standby_since=iso_now())
 
@@ -406,6 +439,46 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
         STATE.update_controller(state="gw10_standby", gw10_ems_mode=verified, standby_since=iso_now())
         return make_control_result("apply", "standby", result, reason, current_mode, GW10_BATTERY_STANDBY)
 
+    # Assist safety-stop: if GW10 is force-discharging (assist) and it is no longer
+    # justified (import gone / GW10 SOC floor / GW20 recovered), return to AUTO now,
+    # bypassing the cooldown so we never keep exporting.
+    if current_mode == GW10_DISCHARGE and (not ASSIST_ENABLED or latest_valid is None or assist_should_stop(latest_valid)):
+        reason = "Assist safety-stop: GW10 discharge no longer justified (import gone / SOC floor / GW20 recovered) -> AUTO."
+        if not apply_enabled:
+            return make_control_result("dry-run", "restore_auto", "would_apply", reason, current_mode, GW10_AUTO)
+        await write_ems_mode(gw10_client, GW10_AUTO)
+        verified = await read_ems_mode(gw10_client)
+        result = "applied" if verified == GW10_AUTO else f"verify_failed:{verified}"
+        action = {"time": iso_now(), "operation": "assist_stop_gw10_ems_mode", "target": "10.0.1.10",
+                  "from_mode": current_mode, "to_mode": GW10_AUTO, "result": result, "reason": reason}
+        append_action_csv(action)
+        STATE.record_write(action)
+        STATE.update_controller(state="monitoring", gw10_ems_mode=verified, standby_since=None)
+        return make_control_result("apply", "restore_auto", result, reason, current_mode, GW10_AUTO)
+
+    # Assist: GW20 low + discharging near max while GW10 is much fuller and the site
+    # imports -> GW10 shares the load (DISCHARGE_PV). Shuttle (handled above) wins.
+    if stable_assist and current_mode != GW10_BATTERY_STANDBY:
+        reason = "GW20 low SOC and discharging near max while GW10 is much fuller and the site imports -> GW10 assists (DISCHARGE_PV)."
+        if current_mode == GW10_DISCHARGE:
+            STATE.update_controller(state="gw10_assist")
+            return make_control_result("apply" if apply_enabled else "dry-run", "assist", "already_applied", reason, current_mode, GW10_DISCHARGE)
+        if current_mode != GW10_AUTO:
+            return make_control_result("apply" if apply_enabled else "dry-run", "assist", "blocked", f"{reason} Current GW10 ems_mode is {current_mode}, expected AUTO (1).", current_mode, GW10_DISCHARGE)
+        if in_cooldown:
+            return make_control_result("apply" if apply_enabled else "dry-run", "assist", "blocked", f"{reason} Write cooldown is still active.", current_mode, GW10_DISCHARGE)
+        if not apply_enabled:
+            return make_control_result("dry-run", "assist", "would_apply", reason, current_mode, GW10_DISCHARGE)
+        await write_ems_mode(gw10_client, GW10_DISCHARGE)
+        verified = await read_ems_mode(gw10_client)
+        result = "applied" if verified == GW10_DISCHARGE else f"verify_failed:{verified}"
+        action = {"time": iso_now(), "operation": "assist_gw10_ems_mode", "target": "10.0.1.10",
+                  "from_mode": current_mode, "to_mode": GW10_DISCHARGE, "result": result, "reason": reason}
+        append_action_csv(action)
+        STATE.record_write(action)
+        STATE.update_controller(state="gw10_assist", gw10_ems_mode=verified, standby_since=None)
+        return make_control_result("apply", "assist", result, reason, current_mode, GW10_DISCHARGE)
+
     if current_mode == GW10_BATTERY_STANDBY and auto_restore:
         standby_age = seconds_since_iso(controller.get("standby_since"))
         reason = f"{CLEAR_RESTORE_SAMPLES} latest valid samples are clear of transfer conflicts."
@@ -430,6 +503,22 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
             "result": result,
             "reason": reason,
         }
+        append_action_csv(action)
+        STATE.record_write(action)
+        STATE.update_controller(state="monitoring", gw10_ems_mode=verified, standby_since=None)
+        return make_control_result("apply", "restore_auto", result, reason, current_mode, GW10_AUTO)
+
+    if current_mode == GW10_DISCHARGE and assist_cleared:
+        reason = f"{CLEAR_RESTORE_SAMPLES} latest valid samples no longer need GW10 assist -> AUTO."
+        if in_cooldown:
+            return make_control_result("apply" if apply_enabled else "dry-run", "restore_auto", "blocked", "Write cooldown is still active.", current_mode, GW10_AUTO)
+        if not apply_enabled:
+            return make_control_result("dry-run", "restore_auto", "would_apply", reason, current_mode, GW10_AUTO)
+        await write_ems_mode(gw10_client, GW10_AUTO)
+        verified = await read_ems_mode(gw10_client)
+        result = "applied" if verified == GW10_AUTO else f"verify_failed:{verified}"
+        action = {"time": iso_now(), "operation": "assist_restore_gw10_ems_mode", "target": "10.0.1.10",
+                  "from_mode": current_mode, "to_mode": GW10_AUTO, "result": result, "reason": reason}
         append_action_csv(action)
         STATE.record_write(action)
         STATE.update_controller(state="monitoring", gw10_ems_mode=verified, standby_since=None)
@@ -475,6 +564,43 @@ def classify_energy_state(sample):
     if gw10_charge and gw20_charge:
         return "both_charge"
     return "normal"
+
+
+def classify_assist(sample):
+    """True when GW20 is overworked (low SOC, discharging near max) while GW10 is
+    much fuller and the site is importing — i.e. GW10 should help discharge."""
+    g10 = sample.get("readings", {}).get("gw10", {})
+    g20 = sample.get("readings", {}).get("gw20", {})
+    s10 = as_number(g10.get("battery_soc"))
+    s20 = as_number(g20.get("battery_soc"))
+    b20 = as_number(g20.get("pbattery1"))
+    m20 = str(g20.get("battery_mode_label") or "").lower()
+    meter20 = as_number(g20.get("meter_active_power_total"))
+    if None in (s10, s20, b20, meter20):
+        return None
+    importing = -meter20  # meter negative == importing from grid
+    gw20_hard_discharge = m20 == "discharge" and abs(b20) >= ASSIST_GW20_DISCHARGE_W
+    if (s20 <= ASSIST_GW20_SOC_MAX and s10 >= ASSIST_GW10_SOC_FLOOR
+            and (s10 - s20) >= ASSIST_SOC_GAP and gw20_hard_discharge
+            and importing >= ASSIST_IMPORT_MIN):
+        return True
+    return False
+
+
+def assist_should_stop(sample):
+    """Immediate safety-stop conditions while GW10 is assisting (force-discharging)."""
+    g10 = sample.get("readings", {}).get("gw10", {})
+    g20 = sample.get("readings", {}).get("gw20", {})
+    s10 = as_number(g10.get("battery_soc"))
+    s20 = as_number(g20.get("battery_soc"))
+    meter20 = as_number(g20.get("meter_active_power_total"))
+    if s10 is not None and s10 <= ASSIST_GW10_SOC_FLOOR:
+        return True
+    if meter20 is not None and (-meter20) < ASSIST_IMPORT_STOP:
+        return True
+    if s20 is not None and s20 >= ASSIST_GW20_SOC_RECOVER:
+        return True
+    return False
 
 
 def analyze_window(samples):
