@@ -24,6 +24,30 @@ except Exception:
     price = None
 
 
+def _load_addon_options():
+    """When running as a Home Assistant add-on, seed env from /data/options.json
+    and wire HA push through the Supervisor proxy. No-op when run standalone."""
+    opt_path = "/data/options.json"
+    if os.path.exists(opt_path):
+        try:
+            with open(opt_path, encoding="utf-8") as fh:
+                opts = json.load(fh)
+        except Exception:
+            opts = {}
+        mapping = {"gw10_ip": "GW10_IP", "gw20_ip": "GW20_IP", "apply": "EMS_APPLY",
+                   "interval": "EMS_INTERVAL", "assist": "EMS_ASSIST"}
+        for key, env in mapping.items():
+            if opts.get(key) is not None and not os.environ.get(env):
+                os.environ[env] = str(opts[key])
+    supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
+    if supervisor_token:
+        os.environ.setdefault("HA_URL", "http://supervisor/core")
+        os.environ.setdefault("HA_TOKEN", supervisor_token)
+
+
+_load_addon_options()
+
+
 INVERTERS = [
     {"id": "gw10", "label": "GW10K-ET", "ip": os.environ.get("GW10_IP", "10.0.1.10"), "role": "secondary"},
     {"id": "gw20", "label": "GW20K-ET", "ip": os.environ.get("GW20_IP", "10.0.1.76"), "role": "master"},

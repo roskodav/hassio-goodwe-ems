@@ -1,16 +1,13 @@
 ARG BUILD_FROM=python:3.12-slim
 FROM ${BUILD_FROM}
 
-# jq is used by run.sh to read the add-on options; goodwe drives the inverters.
-RUN pip install --no-cache-dir goodwe==0.4.10 \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends jq \
-    && rm -rf /var/lib/apt/lists/*
+# goodwe is pure-Python; no apt packages needed (options are read in Python).
+ENV PYTHONUNBUFFERED=1 DATA_DIR=/data
+RUN pip install --no-cache-dir goodwe==0.4.10
 
 WORKDIR /app
-COPY monitor.py ha_bridge.py price.py run.sh ./
+COPY monitor.py ha_bridge.py price.py ./
 COPY static ./static
-RUN chmod +x run.sh
 
-ENV DATA_DIR=/data
-CMD ["./run.sh"]
+# Options are read from /data/options.json inside monitor.py. init: false in config.yaml.
+CMD ["python3", "/app/monitor.py"]
