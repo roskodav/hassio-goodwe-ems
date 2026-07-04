@@ -297,6 +297,16 @@
       if (m === "standby") return "Standby";
       return label || "—";
     }
+    // Znaménko pbattery1 je závislé na firmwaru (u GW10 a GW20 opačné), proto
+    // směr bereme z módu a ukazujeme vždy kladnou velikost.
+    function batText(mode, w) {
+      const a = Math.abs(Number(w) || 0);
+      const m = String(mode || "").toLowerCase();
+      if (a < 80) return "Klid ~0 W";
+      if (m === "charge") return "Nabíjí " + fmt(a);
+      if (m === "discharge") return "Vybíjí " + fmt(a);
+      return fmt(a);
+    }
 
     function classify(s) {
       const g10 = s.readings?.gw10 || {}, g20 = s.readings?.gw20 || {};
@@ -359,7 +369,7 @@
           ${error ? `<p class="small">${error}</p>` : `
           <div class="metrics">
             <div class="metric"><div class="label">Elektroměr</div><div class="value">${fmt(reading.meter_active_power_total)}</div></div>
-            <div class="metric"><div class="label">Baterie</div><div class="value">${fmt(reading.pbattery1)}</div><div class="small">${modeCz(reading.battery_mode_label)}</div></div>
+            <div class="metric"><div class="label">Baterie</div><div class="value">${fmt(Math.abs(Number(reading.pbattery1) || 0))}</div><div class="small">${modeCz(reading.battery_mode_label)}</div></div>
             <div class="metric"><div class="label">Spotřeba</div><div class="value">${fmt(reading.load_ptotal)}</div></div>
             <div class="metric"><div class="label">SOC baterie</div><div class="value">${pct(reading.battery_soc)}</div></div>
           </div>`}
@@ -382,8 +392,8 @@
       setText("n-gw20-p", "měřák " + fmt(meter20));
       setText("n-gw10-p", "měřák " + fmt(meter10));
       setText("n-house", fmt(load20));
-      setText("n-bat20", fmt(bat20));
-      setText("n-bat10", fmt(bat10));
+      setText("n-bat20", batText(m20, bat20));
+      setText("n-bat10", batText(m10, bat10));
       setText("n-soc20", "SOC " + pct(g20.battery_soc));
       setText("n-soc10", "SOC " + pct(g10.battery_soc));
       setSoc("soc20", g20.battery_soc);
