@@ -73,6 +73,13 @@ def _entities(snap):
                 {"unit_of_measurement": "W", "device_class": "power", "state_class": "measurement",
                  "friendly_name": "Dům spotřeba", "icon": "mdi:home-lightning-bolt"}))
 
+    prices = snap.get("prices") or {}
+    if prices.get("now") is not None:
+        out.append(("sensor.goodwe_spot_price", prices.get("now"),
+                    {"unit_of_measurement": "CZK/kWh", "state_class": "measurement",
+                     "friendly_name": "Spotová cena elektřiny", "icon": "mdi:cash",
+                     "level": prices.get("level")}))
+
     conflict = "on" if states.get("gw10_to_gw20", 0) >= 1 else "off"
     ems = ctl.get("gw10_ems_mode")
     ems_label = "STANDBY" if ems == 8 else "AUTO" if ems == 1 else (str(ems) if ems is not None else "unknown")

@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir goodwe==0.4.10 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY monitor.py ha_bridge.py run.sh ./
+COPY monitor.py ha_bridge.py price.py run.sh ./
 COPY static ./static
 RUN chmod +x run.sh
 

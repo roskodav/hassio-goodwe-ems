@@ -18,6 +18,11 @@ try:
 except Exception:
     ha_bridge = None
 
+try:
+    import price
+except Exception:
+    price = None
+
 
 INVERTERS = [
     {"id": "gw10", "label": "GW10K-ET", "ip": os.environ.get("GW10_IP", "10.0.1.10"), "role": "secondary"},
@@ -115,6 +120,7 @@ class MonitorState:
                 "latest": samples[-1] if samples else None,
                 "analysis": analyze_window(samples),
                 "control_plan": plan,
+                "prices": price.snapshot() if price else {},
             }
 
     def add_sample(self, sample):
@@ -873,6 +879,10 @@ def main():
     if ha_bridge is not None and os.environ.get("HA_URL") and os.environ.get("HA_TOKEN"):
         if ha_bridge.start(STATE, INVERTERS):
             print(f"Home Assistant bridge enabled -> {os.environ.get('HA_URL')}")
+
+    if price is not None and str(os.environ.get("PRICE_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}:
+        price.start()
+        print("Spot price fetcher enabled (spotovaelektrina.cz)")
 
     thread = threading.Thread(
         target=lambda: asyncio.run(

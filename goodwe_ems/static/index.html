@@ -104,6 +104,12 @@
     .legend span { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }
     .swatch { width: 20px; height: 4px; border-radius: 2px; display: inline-block; }
 
+    /* --- spotová cena --- */
+    .price-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .price-head { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+    .pstat { border: 1px solid var(--line); background: rgba(244, 241, 234, .62); border-radius: 8px; padding: 10px 12px; }
+    @media (max-width: 850px) { .price-head { grid-template-columns: repeat(2, 1fr); } }
+
     @media (max-width: 850px) {
       header { grid-template-columns: 1fr; }
       .third, .two-third { grid-column: span 12; }
@@ -124,6 +130,22 @@
     <div class="banner" id="banner"></div>
 
     <section class="grid">
+
+      <!-- SPOTOVÁ CENA / DELTA GREEN -->
+      <section class="panel wide">
+        <div class="price-top">
+          <h2 style="margin:0">Spotová cena elektřiny <span class="small" style="font-weight:400">— podle ní řídí Delta Green</span></h2>
+          <span class="tag" id="priceUpdated">čekám na ceník</span>
+        </div>
+        <div class="price-head">
+          <div class="pstat"><div class="label">Teď (spot)</div><div class="value" id="priceNow">— Kč/kWh</div><div class="small" id="priceLevel">—</div></div>
+          <div class="pstat"><div class="label">Nákup ≈</div><div class="value" id="priceBuy">—</div><div class="small">spot + distribuce</div></div>
+          <div class="pstat"><div class="label">Prodej ≈</div><div class="value" id="priceSell">—</div><div class="small">výkup / Delta Green</div></div>
+          <div class="pstat"><div class="label">Dnes min / max</div><div class="value" id="priceMinMax">—</div><div class="small" id="priceHint">—</div></div>
+        </div>
+        <canvas id="priceChart" width="960" height="170"></canvas>
+        <p class="small" id="priceMeta">Zdroj: spotovaelektrina.cz · zelená = levno, oranžová = střední, červená = draho · orámovaná hodina = teď</p>
+      </section>
 
       <!-- JAK TO FUNGUJE -->
       <section class="panel wide how">
@@ -471,6 +493,61 @@
       });
     }
 
+    function levelColor(level) {
+      const m = String(level || "").toLowerCase();
+      return m === "low" ? "#147a5c" : m === "high" ? "#b3312d" : "#b86614";
+    }
+    function levelCz(level) {
+      const m = String(level || "").toLowerCase();
+      return m === "low" ? "levno" : m === "high" ? "draho" : m === "medium" ? "střední" : "—";
+    }
+    function renderPrice(p) {
+      p = p || {};
+      const kc = v => (v != null && Number.isFinite(Number(v))) ? `${Number(v).toFixed(2)} Kč/kWh` : "—";
+      document.getElementById("priceNow").textContent = kc(p.now);
+      const lv = document.getElementById("priceLevel");
+      lv.textContent = levelCz(p.level); lv.style.color = levelColor(p.level); lv.style.fontWeight = "700";
+      document.getElementById("priceBuy").textContent = kc(p.buy);
+      document.getElementById("priceSell").textContent = kc(p.sell);
+      document.getElementById("priceMinMax").textContent =
+        (p.min != null && p.max != null) ? `${Number(p.min).toFixed(2)} / ${Number(p.max).toFixed(2)}` : "—";
+      document.getElementById("priceUpdated").textContent = p.updated ? ("akt. " + p.updated.slice(11, 16)) : "čekám na ceník";
+      const m = String(p.level || "").toLowerCase();
+      document.getElementById("priceHint").textContent =
+        m === "high" ? "Draho → vybíjej baterii, neber ze sítě"
+        : m === "low" ? "Levno → vhodné nabít ze sítě"
+        : m === "medium" ? "Střední cena" : "—";
+      drawPriceBars(p);
+    }
+    function drawPriceBars(p) {
+      const c = document.getElementById("priceChart");
+      if (!c) return;
+      const ctx = c.getContext("2d");
+      ctx.clearRect(0, 0, c.width, c.height);
+      ctx.fillStyle = "#fffdf7"; ctx.fillRect(0, 0, c.width, c.height);
+      const arr = (p.today || []).filter(x => x && x.czk != null);
+      if (!arr.length) {
+        ctx.fillStyle = "#637067"; ctx.font = "13px sans-serif";
+        ctx.fillText("Načítám ceník…", 12, 24); return;
+      }
+      const pad = 30, w = c.width - pad * 2, h = c.height - pad * 2;
+      const max = Math.max(...arr.map(x => x.czk), 1);
+      const base = Math.min(0, ...arr.map(x => x.czk));
+      const bw = w / arr.length;
+      const nowHour = p.hour != null ? p.hour : new Date().getHours();
+      arr.forEach((x, i) => {
+        const bh = Math.max(2, (x.czk - base) / (max - base) * h);
+        const xx = pad + i * bw, yy = pad + h - bh;
+        ctx.globalAlpha = (x.hour === nowHour) ? 1 : 0.5;
+        ctx.fillStyle = levelColor(x.level);
+        ctx.fillRect(xx + 1, yy, Math.max(1, bw - 2), bh);
+        ctx.globalAlpha = 1;
+        if (x.hour === nowHour) { ctx.strokeStyle = "#17201b"; ctx.lineWidth = 2; ctx.strokeRect(xx + 1, yy, Math.max(1, bw - 2), bh); }
+      });
+      ctx.fillStyle = "#637067"; ctx.font = "10px sans-serif"; ctx.textAlign = "center";
+      arr.forEach((x, i) => { if (x.hour % 3 === 0) ctx.fillText(String(x.hour), pad + i * bw + bw / 2, c.height - 8); });
+      ctx.textAlign = "left"; ctx.fillText(max.toFixed(1) + " Kč", 2, pad + 8);
+    }
     function render(data) {
       const latest = data.latest;
       const apply = !!data.status.apply_enabled;
@@ -546,6 +623,7 @@
         `${id} ${c.ok ? "online" : "offline"}`).join(" · ") || "čekám…");
 
       drawChart((data.samples || []).slice(-90));
+      renderPrice(data.prices);
     }
 
     async function refresh() {
