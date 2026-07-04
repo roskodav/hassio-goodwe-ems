@@ -1,13 +1,16 @@
-ARG BUILD_FROM=python:3.12-slim
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest
 FROM ${BUILD_FROM}
 
-# goodwe is pure-Python; no apt packages needed (options are read in Python).
-ENV PYTHONUNBUFFERED=1 DATA_DIR=/data
-RUN pip install --no-cache-dir goodwe==0.4.10
+# HA base images are Alpine and ship no Python — install it, then goodwe (pure-Python).
+RUN apk add --no-cache python3 py3-pip \
+    && pip3 install --no-cache-dir --break-system-packages goodwe==0.4.10
 
+ENV PYTHONUNBUFFERED=1 DATA_DIR=/data
 WORKDIR /app
 COPY monitor.py ha_bridge.py price.py ./
 COPY static ./static
 
-# Options are read from /data/options.json inside monitor.py. init: false in config.yaml.
+# Bypass the base image's s6 init and run our server directly (init: false in config.yaml).
+# Options are read from /data/options.json inside monitor.py.
+ENTRYPOINT []
 CMD ["python3", "/app/monitor.py"]
