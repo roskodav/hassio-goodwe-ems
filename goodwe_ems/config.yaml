@@ -1,0 +1,34 @@
+name: GoodWe EMS Koordinátor
+version: "1.0.0"
+slug: goodwe_ems
+description: >-
+  Koordinace dvou GoodWe hybridů (GW20 master / GW10 sekundární) s kaskádovým
+  měřením. Brání přelévání energie z baterie do baterie přes AC. Dashboard přes Ingress.
+url: https://github.com/roskodav/hassio-goodwe-ems
+init: false
+startup: application
+boot: auto
+ingress: true
+ingress_port: 8765
+panel_icon: mdi:solar-power-variant
+panel_title: GoodWe EMS
+homeassistant_api: true
+host_network: false
+arch:
+  - aarch64
+  - amd64
+  - armv7
+ports:
+  8765/tcp: 8765
+ports_description:
+  8765/tcp: Dashboard i mimo Ingress (volitelné)
+options:
+  gw10_ip: "10.0.1.10"
+  gw20_ip: "10.0.1.76"
+  apply: true
+  interval: 5
+schema:
+  gw10_ip: str
+  gw20_ip: str
+  apply: bool
+  interval: int(1,60)

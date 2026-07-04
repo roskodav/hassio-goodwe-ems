@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GoodWe EMS Koordinátor</title>
+  <style>
+    :root {
+      --bg: #f4f1ea;
+      --ink: #17201b;
+      --muted: #637067;
+      --line: #d8d1c3;
+      --panel: #fffdf7;
+      --green: #147a5c;
+      --amber: #b86614;
+      --red: #b3312d;
+      --blue: #246c91;
+      --shadow: 0 18px 45px rgba(36, 30, 18, .12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(20, 122, 92, .10), transparent 35%),
+        linear-gradient(315deg, rgba(184, 102, 20, .12), transparent 40%),
+        var(--bg);
+      font: 15px/1.5 ui-sans-serif, "Aptos", "Segoe UI", sans-serif;
+    }
+    main { width: min(1180px, calc(100vw - 28px)); margin: 22px auto 48px; }
+    header { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: end; margin-bottom: 16px; }
+    h1 { font-size: clamp(28px, 4vw, 50px); line-height: .96; margin: 0 0 8px; font-family: Georgia, "Times New Roman", serif; font-weight: 700; }
+    .subhead { color: var(--muted); margin: 0; max-width: 760px; }
+    .status-pill { border: 1px solid var(--line); background: rgba(255, 253, 247, .75); padding: 10px 14px; border-radius: 999px; display: inline-flex; gap: 9px; align-items: center; white-space: nowrap; box-shadow: var(--shadow); font-weight: 600; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 5px rgba(20, 122, 92, .15); }
+    .dot.apply { background: var(--red); box-shadow: 0 0 0 5px rgba(179, 49, 45, .16); }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+    .panel { background: rgba(255, 253, 247, .9); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 16px; backdrop-filter: blur(8px); }
+    .wide { grid-column: span 12; }
+    .third { grid-column: span 4; }
+    .two-third { grid-column: span 8; }
+    h2 { margin: 0 0 12px; font-size: 16px; }
+    .cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .inverter { border-left: 5px solid var(--blue); }
+    .inverter.master { border-left-color: var(--green); }
+    .meta { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+    .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .metric { border: 1px solid var(--line); background: rgba(244, 241, 234, .62); border-radius: 6px; padding: 10px; min-height: 70px; }
+    .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    .value { margin-top: 4px; font-size: 23px; font-weight: 750; white-space: nowrap; }
+    .decision { border-left: 5px solid var(--green); }
+    .decision.warn { border-left-color: var(--amber); }
+    .decision.critical { border-left-color: var(--red); }
+    .decision.unknown { border-left-color: var(--muted); }
+    .decision-title { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 10px; }
+    .badge { text-transform: uppercase; font-size: 12px; font-weight: 800; color: white; background: var(--green); border-radius: 999px; padding: 5px 9px; }
+    .badge.warn { background: var(--amber); }
+    .badge.critical { background: var(--red); }
+    .badge.unknown { background: var(--muted); }
+    ul { padding-left: 18px; margin: 8px 0 0; }
+    li { margin: 5px 0; }
+    canvas { width: 100%; height: 260px; display: block; border: 1px solid var(--line); border-radius: 6px; background: #fffdf7; }
+    .progress { border: 1px solid var(--line); height: 14px; border-radius: 999px; overflow: hidden; background: rgba(244, 241, 234, .8); }
+    .bar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--green), var(--blue)); transition: width .4s ease; }
+    .bar.crit { background: linear-gradient(90deg, var(--amber), var(--red)); }
+    .small { font-size: 13px; color: var(--muted); }
+    .how p { margin: 6px 0; }
+    .how b { color: var(--ink); }
+    .pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .tag { border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font-size: 12px; background: rgba(244,241,234,.6); }
+    .banner { display: none; align-items: center; gap: 10px; margin: 0 0 14px; padding: 12px 16px; border-radius: 10px; font-weight: 650; border: 1px solid rgba(179,49,45,.4); background: rgba(179,49,45,.10); color: var(--red); }
+    .banner.show { display: flex; }
+    .banner.ok { border-color: rgba(20,122,92,.35); background: rgba(20,122,92,.10); color: var(--green); display: flex; }
+
+    /* --- infografika / tok energie --- */
+    .flowwrap { margin-top: 2px; }
+    .flowsvg { width: 100%; height: auto; display: block; }
+    .node-box { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; filter: url(#soft); }
+    .node-box.master { stroke: var(--green); stroke-width: 2; }
+    .node-box.secondary { stroke: var(--blue); stroke-width: 2; }
+    .node-title { font: 700 17px Georgia, "Times New Roman", serif; fill: var(--ink); }
+    .node-role { font: 800 10px ui-sans-serif, "Segoe UI", sans-serif; letter-spacing: .11em; }
+    .node-role.m { fill: var(--green); }
+    .node-role.s { fill: var(--blue); }
+    .node-sub { font: 600 11.5px ui-sans-serif, "Segoe UI", sans-serif; fill: var(--muted); letter-spacing: .02em; }
+    .node-val { font: 700 15px ui-sans-serif, "Segoe UI", sans-serif; fill: var(--ink); }
+    .node-cap { font: 800 10px ui-sans-serif, "Segoe UI", sans-serif; fill: var(--muted); letter-spacing: .13em; }
+    .node-dot { fill: #fffdf7; stroke: var(--line); stroke-width: 1.5; }
+    .edge { fill: none; stroke: var(--line); stroke-width: 3; stroke-linecap: round; }
+    .edge.on { stroke-dasharray: 2 8; animation: march 1s linear infinite; stroke-width: 3.5; }
+    .edge.on.rev { animation-direction: reverse; }
+    .edge.green { stroke: var(--green); }
+    .edge.amber { stroke: var(--amber); }
+    .edge.blue { stroke: var(--blue); }
+    .edge.red { stroke: var(--red); stroke-width: 5.5; stroke-dasharray: 3 7; animation-duration: .5s; }
+    .edge-lbl { font: 700 11.5px ui-sans-serif, "Segoe UI", sans-serif; fill: var(--muted); }
+    .edge-lbl.hot { fill: var(--red); }
+    @keyframes march { to { stroke-dashoffset: -20; } }
+    .soc-track { fill: rgba(244,241,234,.9); stroke: var(--muted); stroke-width: 1.1; }
+    .soc-fill { fill: var(--green); transition: width .5s ease; }
+    .soc-nub { fill: var(--muted); }
+    .ico { stroke: var(--amber); stroke-width: 2.4; stroke-linecap: round; fill: none; }
+    .sun-core { fill: var(--amber); }
+    .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 14px; font-size: 12px; }
+    .legend span { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }
+    .swatch { width: 20px; height: 4px; border-radius: 2px; display: inline-block; }
+
+    @media (max-width: 850px) {
+      header { grid-template-columns: 1fr; }
+      .third, .two-third { grid-column: span 12; }
+      .cards { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>GoodWe EMS Koordinátor</h1>
+        <p class="subhead">Živé řízení dvou hybridních měničů <b>GW20K‑ET</b> (hlavní) a <b>GW10K‑ET</b> (sekundární) s kaskádovým měřením. Brání přelévání energie z baterie do baterie přes střídač.</p>
+      </div>
+      <div class="status-pill"><span class="dot" id="statusDot"></span><span id="statusText">Připojuji…</span></div>
+    </header>
+
+    <div class="banner" id="banner"></div>
+
+    <section class="grid">
+
+      <!-- JAK TO FUNGUJE -->
+      <section class="panel wide how">
+        <h2>Jak to funguje</h2>
+        <p><b>Stav instalace.</b> Dva samostatné hybridní měniče GoodWe na jedné třífázové síti, každý s <b>vlastní baterií</b> a <b>vlastním chytrým elektroměrem</b>. Elektroměry jsou zapojené <b>kaskádově</b> (za sebou), takže si měniče navzájem „vidí“ do toku energie.</p>
+        <p><b>Problém.</b> Oba jedou v režimu <b>AUTO / self‑use</b> a každý se sám snaží držet nulu na svém elektroměru. V noci se stane, že <b>GW10 vybíjí</b> svoji baterii, <b>GW20</b> to vyhodnotí jako přebytek a <b>nabíjí</b> si svoji baterii. Energie zbytečně teče z jedné baterie do druhé přes AC se ztrátami (round‑trip cca 20–30 %).</p>
+        <p><b>Co dělá tento koordinátor.</b> Každých 5 s čte oba měniče. <b>GW20 je hlavní (master)</b> reference. Když stabilně po dobu 6 vzorků (≈ 30 s) uvidí konflikt „GW10 vybíjí + GW20 nabíjí“, přepne <b>GW10 do režimu BATTERY_STANDBY</b> — baterie se pak ani nenabíjí, ani nevybíjí. Je to <b>totéž nastavení jako v appce SolarGo</b> (EMS Mód, registr 47511), takže bezpečné a vratné. Po 12 klidných vzorcích a min. 15 min vrátí GW10 zpět do AUTO.</p>
+        <div class="pill-row">
+          <span class="tag">Zapisuje jen: EMS mód GW10 &nbsp;AUTO (1) ⇄ STANDBY (8)</span>
+          <span class="tag">Nesahá na: grid code, zálohu, firmware, GW20</span>
+          <span class="tag">Při výpadku komunikace: nezapisuje nic</span>
+          <span class="tag">Po zápisu ověří + 5 min cooldown</span>
+        </div>
+      </section>
+
+      <!-- INFOGRAFIKA -->
+      <section class="panel wide">
+        <h2>Co se právě děje — tok energie</h2>
+        <div class="flowwrap">
+        <svg class="flowsvg" viewBox="0 0 960 520" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Schéma toku energie mezi sítí, měniči, bateriemi a domem">
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="7.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"></path>
+            </marker>
+            <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+              <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#241e12" flood-opacity="0.13"></feDropShadow>
+            </filter>
+          </defs>
+
+          <!-- HRANY -->
+          <path id="e-grid"    class="edge" d="M480,90 L320,185"></path>
+          <path id="e-cascade" class="edge" d="M415,240 L545,240"></path>
+          <path id="e-house"   class="edge" d="M480,240 L480,380"></path>
+          <path id="e-pv20"    class="edge" d="M150,240 L225,240"></path>
+          <path id="e-pv10"    class="edge" d="M810,240 L735,240"></path>
+          <path id="e-bat20"   class="edge" d="M320,295 L320,380"></path>
+          <path id="e-bat10"   class="edge" d="M640,295 L640,380"></path>
+
+          <!-- spojovací tečky -->
+          <circle class="node-dot" cx="480" cy="90"  r="4"></circle>
+          <circle class="node-dot" cx="320" cy="185" r="4"></circle>
+          <circle class="node-dot" cx="640" cy="185" r="4"></circle>
+          <circle class="node-dot" cx="225" cy="240" r="4"></circle>
+          <circle class="node-dot" cx="415" cy="240" r="4"></circle>
+          <circle class="node-dot" cx="480" cy="240" r="4.5"></circle>
+          <circle class="node-dot" cx="545" cy="240" r="4"></circle>
+          <circle class="node-dot" cx="735" cy="240" r="4"></circle>
+          <circle class="node-dot" cx="320" cy="380" r="4"></circle>
+          <circle class="node-dot" cx="480" cy="380" r="4"></circle>
+          <circle class="node-dot" cx="640" cy="380" r="4"></circle>
+
+          <!-- POPISKY HRAN -->
+          <text id="l-grid"    class="edge-lbl" x="470" y="150" text-anchor="end">měřák</text>
+          <text id="l-cascade" class="edge-lbl" x="480" y="226" text-anchor="middle">kaskáda · společné AC</text>
+          <text id="l-house"   class="edge-lbl" x="492" y="320" text-anchor="start">spotřeba</text>
+          <text id="l-pv20"    class="edge-lbl" x="187" y="228" text-anchor="middle">PV</text>
+          <text id="l-pv10"    class="edge-lbl" x="773" y="228" text-anchor="middle">PV</text>
+          <text id="l-bat20"   class="edge-lbl" x="332" y="352" text-anchor="start">standby</text>
+          <text id="l-bat10"   class="edge-lbl" x="652" y="352" text-anchor="start">standby</text>
+
+          <!-- SLUNCE / PV -->
+          <g transform="translate(135,240)">
+            <path class="ico" d="M15,0L20,0 M10.6,10.6L14.1,14.1 M0,15L0,20 M-10.6,10.6L-14.1,14.1 M-15,0L-20,0 M-10.6,-10.6L-14.1,-14.1 M0,-15L0,-20 M10.6,-10.6L14.1,-14.1"></path>
+            <circle class="sun-core" r="11"></circle>
+          </g>
+          <g transform="translate(825,240)">
+            <path class="ico" d="M15,0L20,0 M10.6,10.6L14.1,14.1 M0,15L0,20 M-10.6,10.6L-14.1,14.1 M-15,0L-20,0 M-10.6,-10.6L-14.1,-14.1 M0,-15L0,-20 M10.6,-10.6L14.1,-14.1"></path>
+            <circle class="sun-core" r="11"></circle>
+          </g>
+
+          <!-- SÍŤ -->
+          <rect class="node-box" x="410" y="26" width="140" height="64" rx="12"></rect>
+          <text class="node-title" x="480" y="54" text-anchor="middle" style="font-size:15px">SÍŤ</text>
+          <text class="node-sub"   x="480" y="74" text-anchor="middle">přípojka</text>
+
+          <!-- GW20 -->
+          <rect class="node-box master" x="225" y="185" width="190" height="110" rx="14"></rect>
+          <text class="node-title" x="320" y="214" text-anchor="middle">GW20K‑ET</text>
+          <text class="node-role m" x="320" y="232" text-anchor="middle">HLAVNÍ · MASTER</text>
+          <text class="node-val" id="n-gw20-mode" x="320" y="260" text-anchor="middle">—</text>
+          <text class="node-sub" id="n-gw20-p"    x="320" y="281" text-anchor="middle">měřák — W</text>
+
+          <!-- GW10 -->
+          <rect class="node-box secondary" x="545" y="185" width="190" height="110" rx="14"></rect>
+          <text class="node-title" x="640" y="214" text-anchor="middle">GW10K‑ET</text>
+          <text class="node-role s" x="640" y="232" text-anchor="middle">SEKUNDÁRNÍ · ŘÍZENÝ</text>
+          <text class="node-val" id="n-gw10-mode" x="640" y="260" text-anchor="middle">—</text>
+          <text class="node-sub" id="n-gw10-p"    x="640" y="281" text-anchor="middle">měřák — W</text>
+
+          <!-- BATERIE GW20 -->
+          <rect class="node-box" x="250" y="380" width="140" height="114" rx="14"></rect>
+          <text class="node-cap" x="320" y="406" text-anchor="middle">BATERIE GW20</text>
+          <text class="node-val" id="n-bat20" x="320" y="430" text-anchor="middle">—</text>
+          <rect class="soc-track" x="270" y="442" width="100" height="14" rx="3.5"></rect>
+          <rect class="soc-nub"   x="370" y="446" width="4" height="6" rx="1.5"></rect>
+          <rect class="soc-fill" id="soc20" x="270" y="442" width="0" height="14" rx="3.5"></rect>
+          <text class="node-sub" id="n-soc20" x="320" y="478" text-anchor="middle">SOC —</text>
+
+          <!-- DŮM -->
+          <rect class="node-box" x="410" y="380" width="140" height="114" rx="14"></rect>
+          <text class="node-cap" x="480" y="406" text-anchor="middle">DŮM</text>
+          <text class="node-val" id="n-house" x="480" y="432" text-anchor="middle">— W</text>
+          <text class="node-sub" id="n-house2" x="480" y="462" text-anchor="middle">spotřeba objektu</text>
+
+          <!-- BATERIE GW10 -->
+          <rect class="node-box" x="570" y="380" width="140" height="114" rx="14"></rect>
+          <text class="node-cap" x="640" y="406" text-anchor="middle">BATERIE GW10</text>
+          <text class="node-val" id="n-bat10" x="640" y="430" text-anchor="middle">—</text>
+          <rect class="soc-track" x="590" y="442" width="100" height="14" rx="3.5"></rect>
+          <rect class="soc-nub"   x="690" y="446" width="4" height="6" rx="1.5"></rect>
+          <rect class="soc-fill" id="soc10" x="590" y="442" width="0" height="14" rx="3.5"></rect>
+          <text class="node-sub" id="n-soc10" x="640" y="478" text-anchor="middle">SOC —</text>
+        </svg>
+        </div>
+        <div class="legend">
+          <span><span class="swatch" style="background:var(--green)"></span> PV výroba / vybíjení baterie</span>
+          <span><span class="swatch" style="background:var(--amber)"></span> nabíjení baterie</span>
+          <span><span class="swatch" style="background:var(--blue)"></span> spotřeba / síť</span>
+          <span><span class="swatch" style="background:var(--red)"></span> konflikt — přelévání baterií</span>
+        </div>
+      </section>
+
+      <!-- KARTY MĚNIČŮ -->
+      <div class="wide cards" id="cards"></div>
+
+      <!-- ŘÍDICÍ PANEL -->
+      <section class="panel two-third decision" id="decisionPanel">
+        <div class="decision-title">
+          <h2 id="decisionTitle">Čekám na data</h2>
+          <span class="badge unknown" id="decisionBadge">—</span>
+        </div>
+        <p class="small" id="triggerText">Spouštěč: konflikt 0/6 vzorků.</p>
+        <div class="progress"><div class="bar" id="triggerBar"></div></div>
+        <p class="small" id="analysisText" style="margin-top:12px">Zatím žádné vzorky.</p>
+        <ul id="notes"></ul>
+      </section>
+
+      <!-- STAV KOORDINÁTORU -->
+      <section class="panel third">
+        <h2>Stav koordinátoru</h2>
+        <p class="small">Režim: <b id="ctlMode">—</b></p>
+        <p class="small">Stav GW10: <b id="ctlState">—</b></p>
+        <p class="small">EMS mód GW10: <b id="ctlEms">—</b></p>
+        <p class="small">Poslední akce:</p>
+        <p id="ctlLast" style="margin:4px 0">—</p>
+        <p class="small">Reálné zápisy: <b id="ctlWrites">0</b></p>
+        <p class="small" id="ctlConn">Komunikace: čekám…</p>
+      </section>
+
+      <!-- GRAF -->
+      <section class="panel wide">
+        <h2>Časová osa výkonů</h2>
+        <canvas id="chart" width="960" height="320"></canvas>
+        <p class="small">Výkon baterií a elektroměrů z posledních vzorků. Znaménka odpovídají API měničů.</p>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    const fmt = (v, unit = "W") => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "n/a";
+      return `${Math.round(n).toLocaleString("cs-CZ")} ${unit}`;
+    };
+    const pct = v => { const n = Number(v); return Number.isFinite(n) ? `${Math.round(n)} %` : "n/a"; };
+
+    function modeCz(label) {
+      const m = String(label || "").toLowerCase();
+      if (m === "charge") return "Nabíjení";
+      if (m === "discharge") return "Vybíjení";
+      if (m === "standby") return "Standby";
+      return label || "—";
+    }
+
+    function classify(s) {
+      const g10 = s.readings?.gw10 || {}, g20 = s.readings?.gw20 || {};
+      const b10 = Number(g10.pbattery1), b20 = Number(g20.pbattery1);
+      const m10 = String(g10.battery_mode_label || "").toLowerCase();
+      const m20 = String(g20.battery_mode_label || "").toLowerCase();
+      if (!Number.isFinite(b10) || !Number.isFinite(b20)) return "unknown";
+      const d10 = m10 === "discharge" && Math.abs(b10) > 300;
+      const c10 = m10 === "charge" && Math.abs(b10) > 300;
+      const d20 = m20 === "discharge" && Math.abs(b20) > 300;
+      const c20 = m20 === "charge" && Math.abs(b20) > 300;
+      if (d10 && c20) return "gw10_to_gw20";
+      if (d20 && c10) return "gw20_to_gw10";
+      if (d10 && d20) return "both_discharge";
+      if (c10 && c20) return "both_charge";
+      return "normal";
+    }
+
+    function conflictStreak(samples) {
+      let n = 0;
+      for (let i = samples.length - 1; i >= 0; i--) {
+        const st = classify(samples[i]);
+        if (st === "unknown") continue;
+        if (st === "gw10_to_gw20") n++; else break;
+      }
+      return n;
+    }
+
+    function setEdge(id, on, color, rev, arrow) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.setAttribute("class", "edge" + (on ? " on" : "") + (color ? " " + color : "") + (rev ? " rev" : ""));
+      el.removeAttribute("marker-start");
+      el.removeAttribute("marker-end");
+      if (on && arrow === "start") el.setAttribute("marker-start", "url(#ah)");
+      else if (on && arrow === "end") el.setAttribute("marker-end", "url(#ah)");
+    }
+    function setText(id, txt) { const el = document.getElementById(id); if (el) el.textContent = txt; }
+    function setSoc(id, soc) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const s = Math.min(100, Math.max(0, Number(soc) || 0));
+      el.setAttribute("width", String(s));
+      el.style.fill = s < 20 ? "var(--red)" : s < 50 ? "var(--amber)" : "var(--green)";
+    }
+    function applyBat(edgeId, lblId, mode, bat) {
+      if (mode === "charge") { setEdge(edgeId, true, "amber", false, "end"); setText(lblId, "▼ nabíjí " + fmt(Math.abs(bat))); }
+      else if (mode === "discharge") { setEdge(edgeId, true, "green", true, "start"); setText(lblId, "▲ vybíjí " + fmt(Math.abs(bat))); }
+      else { setEdge(edgeId, false, null, false, null); setText(lblId, "standby"); }
+    }
+
+    function inverterCard(spec, reading) {
+      const roleClass = spec.role === "master" ? "master" : "";
+      const roleCz = spec.role === "master" ? "hlavní" : "sekundární";
+      const error = reading?.error;
+      return `
+        <article class="panel inverter ${roleClass}">
+          <h2>${spec.label}</h2>
+          <div class="meta">${spec.ip} · ${roleCz}${error ? " · CHYBA" : ""}</div>
+          ${error ? `<p class="small">${error}</p>` : `
+          <div class="metrics">
+            <div class="metric"><div class="label">Elektroměr</div><div class="value">${fmt(reading.meter_active_power_total)}</div></div>
+            <div class="metric"><div class="label">Baterie</div><div class="value">${fmt(reading.pbattery1)}</div><div class="small">${modeCz(reading.battery_mode_label)}</div></div>
+            <div class="metric"><div class="label">Spotřeba</div><div class="value">${fmt(reading.load_ptotal)}</div></div>
+            <div class="metric"><div class="label">SOC baterie</div><div class="value">${pct(reading.battery_soc)}</div></div>
+          </div>`}
+        </article>`;
+    }
+
+    function updateFlow(g10, g20, state) {
+      const num = (o, k) => { const v = Number(o?.[k]); return Number.isFinite(v) ? v : null; };
+      const pv10 = num(g10, "ppv") ?? num(g10, "ppv_total");
+      const pv20 = num(g20, "ppv") ?? num(g20, "ppv_total");
+      const bat10 = num(g10, "pbattery1"), bat20 = num(g20, "pbattery1");
+      const m10 = String(g10.battery_mode_label || "").toLowerCase();
+      const m20 = String(g20.battery_mode_label || "").toLowerCase();
+      const load20 = num(g20, "load_ptotal");
+      const meter20 = num(g20, "meter_active_power_total");
+      const meter10 = num(g10, "meter_active_power_total");
+
+      setText("n-gw20-mode", "Baterie: " + modeCz(g20.battery_mode_label));
+      setText("n-gw10-mode", "Baterie: " + modeCz(g10.battery_mode_label));
+      setText("n-gw20-p", "měřák " + fmt(meter20));
+      setText("n-gw10-p", "měřák " + fmt(meter10));
+      setText("n-house", fmt(load20));
+      setText("n-bat20", fmt(bat20));
+      setText("n-bat10", fmt(bat10));
+      setText("n-soc20", "SOC " + pct(g20.battery_soc));
+      setText("n-soc10", "SOC " + pct(g10.battery_soc));
+      setSoc("soc20", g20.battery_soc);
+      setSoc("soc10", g10.battery_soc);
+
+      const pv20On = pv20 != null && pv20 > 50, pv10On = pv10 != null && pv10 > 50;
+      setEdge("e-pv20", pv20On, "green", false, "end");
+      setEdge("e-pv10", pv10On, "green", false, "end");
+      setText("l-pv20", pv20On ? "PV " + fmt(pv20) : "PV");
+      setText("l-pv10", pv10On ? "PV " + fmt(pv10) : "PV");
+
+      const houseOn = load20 != null && load20 > 50;
+      setEdge("e-house", houseOn, "blue", false, "end");
+      setText("l-house", houseOn ? "spotřeba " + fmt(load20) : "spotřeba");
+
+      const gridOn = meter20 != null && Math.abs(meter20) > 50;
+      setEdge("e-grid", gridOn, "blue", false, "end");
+      setText("l-grid", "měřák " + fmt(meter20));
+
+      applyBat("e-bat20", "l-bat20", m20, bat20);
+      applyBat("e-bat10", "l-bat10", m10, bat10);
+
+      const lcas = document.getElementById("l-cascade");
+      if (state === "gw10_to_gw20") {
+        setEdge("e-cascade", true, "red", true, "start");
+        setText("l-cascade", "PŘELÉVÁNÍ ⚠");
+        if (lcas) lcas.setAttribute("class", "edge-lbl hot");
+      } else {
+        setEdge("e-cascade", false, null, false, null);
+        setText("l-cascade", "kaskáda · společné AC");
+        if (lcas) lcas.setAttribute("class", "edge-lbl");
+      }
+    }
+
+    function drawChart(samples) {
+      const canvas = document.getElementById("chart");
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#fffdf7"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const pad = 40;
+      const series = [
+        { key: ["gw10", "pbattery1"], color: "#246c91", label: "GW10 baterie" },
+        { key: ["gw20", "pbattery1"], color: "#147a5c", label: "GW20 baterie" },
+        { key: ["gw10", "meter_active_power_total"], color: "#8a6f31", label: "GW10 měřák" },
+        { key: ["gw20", "meter_active_power_total"], color: "#b86614", label: "GW20 měřák" },
+      ];
+      const values = [];
+      samples.forEach(s => series.forEach(def => {
+        const v = Number(s.readings?.[def.key[0]]?.[def.key[1]]);
+        if (Number.isFinite(v)) values.push(v);
+      }));
+      const maxAbs = Math.max(1000, ...values.map(v => Math.abs(v)));
+      const xStep = samples.length > 1 ? (canvas.width - pad * 2) / (samples.length - 1) : 0;
+      const y = v => pad + (maxAbs - v) * (canvas.height - pad * 2) / (maxAbs * 2);
+      ctx.strokeStyle = "#d8d1c3"; ctx.lineWidth = 1;
+      for (let i = -2; i <= 2; i++) {
+        const yy = y(maxAbs * i / 2);
+        ctx.beginPath(); ctx.moveTo(pad, yy); ctx.lineTo(canvas.width - pad, yy); ctx.stroke();
+      }
+      ctx.fillStyle = "#637067"; ctx.font = "12px sans-serif";
+      ctx.fillText(`${Math.round(maxAbs)} W`, 4, y(maxAbs) + 4);
+      ctx.fillText("0 W", 10, y(0) + 4);
+      ctx.fillText(`${Math.round(-maxAbs)} W`, 4, y(-maxAbs) + 4);
+      series.forEach((def, idx) => {
+        ctx.strokeStyle = def.color; ctx.lineWidth = 2; ctx.beginPath();
+        samples.forEach((s, i) => {
+          const v = Number(s.readings?.[def.key[0]]?.[def.key[1]]);
+          if (!Number.isFinite(v)) return;
+          const x = pad + i * xStep, yy = y(v);
+          if (i === 0) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
+        });
+        ctx.stroke();
+        ctx.fillStyle = def.color; ctx.fillText(def.label, pad + idx * 150, 20);
+      });
+    }
+
+    function render(data) {
+      const latest = data.latest;
+      const apply = !!data.status.apply_enabled;
+      const dot = document.getElementById("statusDot");
+      dot.className = "dot" + (apply ? " apply" : "");
+      const modeTxt = apply ? "OSTRÝ PROVOZ (apply)" : "Simulace (dry‑run)";
+      document.getElementById("statusText").textContent = latest
+        ? `${modeTxt} · ${data.status.sample_count} vzorků · ${latest.time}`
+        : "Čekám na vzorky";
+
+      document.getElementById("cards").innerHTML =
+        data.inverters.map(spec => inverterCard(spec, latest?.readings?.[spec.id] || {})).join("");
+
+      const g10 = latest?.readings?.gw10 || {};
+      const g20 = latest?.readings?.gw20 || {};
+      const state = latest ? classify(latest) : "unknown";
+      updateFlow(g10, g20, state);
+
+      const banner = document.getElementById("banner");
+      const ctl = (data.control_plan && data.control_plan.controller) || {};
+      if (state === "gw10_to_gw20") {
+        banner.className = "banner show";
+        banner.textContent = "⚠ KONFLIKT: GW10 vybíjí baterii do GW20, který ji nabíjí. Koordinátor přepíná GW10 do STANDBY.";
+      } else if (ctl.state === "gw10_standby") {
+        banner.className = "banner ok";
+        banner.textContent = "GW10 je držen v režimu STANDBY, aby nepřeléval energii do GW20. Po stabilizaci se vrátí do AUTO.";
+      } else {
+        banner.className = "banner";
+      }
+
+      const decision = latest?.decision || { severity: "unknown", title: "Čekám", notes: [] };
+      const sevCz = { ok: "v pořádku", warn: "pozor", critical: "kritické", unknown: "neznámé" };
+      const panel = document.getElementById("decisionPanel");
+      panel.className = `panel two-third decision ${decision.severity || "unknown"}`;
+      const titleCz = {
+        "hold": "Bez zásahu", "keep gw20 master": "GW20 drží dům",
+        "limit gw10 discharge": "Omezit vybíjení GW10", "limit gw10 charge": "Omezit nabíjení GW10",
+        "observe": "Sleduji", "wait": "Čekám na data"
+      };
+      document.getElementById("decisionTitle").textContent =
+        titleCz[(decision.title || "").toLowerCase()] || decision.title || "Čekám";
+      const badge = document.getElementById("decisionBadge");
+      badge.className = `badge ${decision.severity || "unknown"}`;
+      badge.textContent = sevCz[decision.severity] || "neznámé";
+      document.getElementById("notes").innerHTML = (decision.notes || []).map(n => `<li>${n}</li>`).join("");
+      document.getElementById("analysisText").textContent = data.analysis?.summary || "";
+
+      const streak = conflictStreak(data.samples || []);
+      document.getElementById("triggerText").textContent =
+        `Spouštěč: konflikt ${streak}/6 vzorků po sobě → při 6/6 přepnu GW10 do STANDBY.`;
+      const tbar = document.getElementById("triggerBar");
+      tbar.style.width = `${Math.min(100, Math.round(streak / 6 * 100))}%`;
+      tbar.className = "bar" + (streak >= 3 ? " crit" : "");
+
+      const emsTxt = ctl.gw10_ems_mode === 1 ? "AUTO (1)"
+        : ctl.gw10_ems_mode === 8 ? "STANDBY (8)"
+        : (ctl.gw10_ems_mode ?? "—");
+      const stateCz = { monitoring: "sleduji", gw10_standby: "GW10 ve STANDBY" };
+      document.getElementById("ctlMode").textContent = apply ? "OSTRÝ (zapisuje)" : "SIMULACE";
+      document.getElementById("ctlState").textContent = stateCz[ctl.state] || ctl.state || "—";
+      document.getElementById("ctlEms").textContent = emsTxt;
+      document.getElementById("ctlWrites").textContent = data.status.write_count ?? 0;
+      const lw = ctl.last_write_result;
+      document.getElementById("ctlLast").textContent = lw
+        ? `${lw.time || ""} · ${lw.operation} ${lw.from_mode}→${lw.to_mode} (${lw.result})`
+        : "zatím žádná (žádný konflikt nevyžadoval zásah)";
+      const conns = data.status.connections || {};
+      document.getElementById("ctlConn").textContent = "Komunikace: " + (Object.entries(conns).map(([id, c]) =>
+        `${id} ${c.ok ? "online" : "offline"}`).join(" · ") || "čekám…");
+
+      drawChart((data.samples || []).slice(-90));
+    }
+
+    async function refresh() {
+      try {
+        const res = await fetch("./api/state", { cache: "no-store" });
+        render(await res.json());
+      } catch (err) {
+        document.getElementById("statusText").textContent = `Odpojeno: ${err}`;
+      }
+    }
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>
