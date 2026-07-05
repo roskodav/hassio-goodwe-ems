@@ -1,5 +1,5 @@
 name: GoodWe EMS Koordinátor
-version: "1.4.0"
+version: "1.5.0"
 slug: goodwe_ems
 description: >-
   Koordinace dvou GoodWe hybridů (GW20 master / GW10 sekundární) s kaskádovým

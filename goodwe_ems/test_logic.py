@@ -174,6 +174,17 @@ class TestAssistNeeded(unittest.TestCase):
         self.assertIsNone(logic.assist_needed(s, self.CFG))
 
 
+class TestGw20Charging(unittest.TestCase):
+    def test_charging(self):
+        s = sample(gw20={"pbattery1": 4000, "battery_mode_label": "Charge"})
+        self.assertTrue(logic.gw20_charging(s))
+
+    def test_not_charging(self):
+        self.assertFalse(logic.gw20_charging(sample(gw20={"pbattery1": 4000, "battery_mode_label": "Discharge"})))
+        self.assertFalse(logic.gw20_charging(sample(gw20={"pbattery1": 100, "battery_mode_label": "Charge"})))
+        self.assertFalse(logic.gw20_charging(sample(gw20={"battery_mode_label": "Charge"})))
+
+
 class TestActionLog(unittest.TestCase):
     def test_summary(self):
         rows = [{"operation": "set_gw10_ems_mode"}, {"operation": "set_gw10_ems_mode"},

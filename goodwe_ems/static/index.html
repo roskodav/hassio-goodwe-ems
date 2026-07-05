@@ -17,12 +17,6 @@
       --blue: #246c91;
       --shadow: 0 18px 45px rgba(36, 30, 18, .12);
     }
-    @media (prefers-color-scheme: dark) {
-      :root { --bg:#12140f; --ink:#e9e7de; --muted:#98a198; --line:#2f342c; --panel:#1b1e18; --green:#4bbf97; --amber:#e0954a; --red:#e0655f; --blue:#5aa9cf; --shadow:0 18px 45px rgba(0,0,0,.45); }
-    }
-    :root[data-theme="light"] { --bg:#f4f1ea; --ink:#17201b; --muted:#637067; --line:#d8d1c3; --panel:#fffdf7; --green:#147a5c; --amber:#b86614; --red:#b3312d; --blue:#246c91; --shadow:0 18px 45px rgba(36,30,18,.12); }
-    :root[data-theme="dark"] { --bg:#12140f; --ink:#e9e7de; --muted:#98a198; --line:#2f342c; --panel:#1b1e18; --green:#4bbf97; --amber:#e0954a; --red:#e0655f; --blue:#5aa9cf; --shadow:0 18px 45px rgba(0,0,0,.45); }
-    .theme-btn { border:1px solid var(--line); background:rgba(127,127,127,.08); color:var(--ink); border-radius:999px; padding:9px 13px; cursor:pointer; font:inherit; white-space:nowrap; }
     .tiles { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
     @media (max-width:850px){ .tiles{ grid-template-columns:1fr; } }
     .tile { border:1px solid var(--line); background:rgba(127,127,127,.05); border-radius:8px; padding:14px; display:flex; gap:13px; align-items:center; }
@@ -146,10 +140,7 @@
         <h1>GoodWe EMS Koordinátor</h1>
         <p class="subhead">Živé řízení dvou hybridních měničů <b>GW20K‑ET</b> (hlavní) a <b>GW10K‑ET</b> (sekundární) s kaskádovým měřením. Brání přelévání energie z baterie do baterie přes střídač.</p>
       </div>
-      <div style="display:flex;gap:10px;align-items:center">
-        <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="Světlý / tmavý motiv">🌓</button>
-        <div class="status-pill"><span class="dot" id="statusDot"></span><span id="statusText">Připojuji…</span></div>
-      </div>
+      <div class="status-pill"><span class="dot" id="statusDot"></span><span id="statusText">Připojuji…</span></div>
     </header>
 
     <div class="banner" id="banner"></div>
@@ -180,7 +171,7 @@
             <div><div class="label">Soběstačnost teď</div><div class="small">podíl krytý z PV + baterie</div></div>
           </div>
           <div class="tile">
-            <div><div class="label" id="costLabel">Dnes za síť</div><div class="big" id="costToday">—</div><div class="small">za spotové ceny</div></div>
+            <div><div class="label" id="costLabel">Dnes za síť</div><div class="big" id="costToday">—</div><div class="small" id="shuttleInfo">za spotové ceny</div></div>
           </div>
           <div class="tile">
             <div><div class="label">Doporučení dle ceny</div><div class="small" id="adviceText" style="margin-top:4px">—</div>
@@ -553,6 +544,14 @@
         ctx.stroke();
         ctx.fillStyle = def.color; ctx.fillText(def.label, pad + idx * 150, 20);
       });
+      ctx.fillStyle = cvar("--muted"); ctx.font = "10px sans-serif"; ctx.textAlign = "center";
+      const NL = Math.min(6, samples.length);
+      for (let k = 0; k < NL; k++) {
+        const i = NL > 1 ? Math.round((samples.length - 1) * k / (NL - 1)) : 0;
+        const tt = ((samples[i] || {}).time || "").slice(11, 19);
+        if (tt) ctx.fillText(tt, pad + i * xStep, canvas.height - 6);
+      }
+      ctx.textAlign = "left";
     }
 
     function levelColor(level) {
@@ -612,20 +611,6 @@
     }
     function cvar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim() || "#000"; }
 
-    (function initTheme() {
-      const saved = localStorage.getItem("goodwe-theme");
-      if (saved) document.documentElement.setAttribute("data-theme", saved);
-    })();
-    function toggleTheme() {
-      const cur = document.documentElement.getAttribute("data-theme")
-        || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-      const next = cur === "dark" ? "light" : "dark";
-      document.documentElement.setAttribute("data-theme", next);
-      localStorage.setItem("goodwe-theme", next);
-      refresh();
-      fetchExtras();
-    }
-
     function renderStats(data) {
       const ss = data.self_sufficiency;
       const g = document.getElementById("gauge");
@@ -639,6 +624,11 @@
       } else {
         document.getElementById("costToday").textContent = "—";
       }
+      const sh = Number(sv.shuttle_kwh_today);
+      const si = document.getElementById("shuttleInfo");
+      if (si) si.textContent = (Number.isFinite(sh) && sh > 0.05)
+        ? `⚠ přelito ${sh.toFixed(1)} kWh (~${(Number(sv.shuttle_loss_czk_today) || 0).toFixed(1)} Kč ztráta)`
+        : "za spotové ceny";
       document.getElementById("adviceText").textContent = (data.advice || {}).text || "—";
       const st = data.stats || {};
       document.getElementById("statActions").textContent = st.actions_total ?? "—";
@@ -695,6 +685,13 @@
         (h[s[0]] || []).forEach((v, i) => { const n = Number(v); if (!Number.isFinite(n)) return; const xx = X(i), yy = Y(n); i === 0 ? ctx.moveTo(xx, yy) : ctx.lineTo(xx, yy); });
         ctx.stroke(); ctx.fillStyle = s[1]; ctx.fillText(s[2], pad + idx * 150, 16);
       });
+      ctx.fillStyle = cvar("--muted"); ctx.font = "10px sans-serif"; ctx.textAlign = "center";
+      for (let k = 0; k < 6; k++) {
+        const i = Math.round((t.length - 1) * k / 5);
+        const lbl = (t[i] || "").slice(11, 16);
+        if (lbl) ctx.fillText(lbl, X(i), c.height - 6);
+      }
+      ctx.textAlign = "left";
     }
 
     function renderActions(a) {

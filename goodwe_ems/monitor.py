@@ -84,6 +84,7 @@ VALID_WINDOW = 24
 CONFLICT_APPLY_SAMPLES = 6
 CLEAR_RESTORE_SAMPLES = 12
 MIN_STANDBY_SECONDS = 15 * 60
+MAX_STANDBY_SECONDS = 2 * 60 * 60  # release GW10 after this even if GW20 keeps charging
 WRITE_COOLDOWN_SECONDS = 5 * 60
 GW10_AUTO = 1
 GW10_DISCHARGE = 3  # EMSMode.DISCHARGE_PV — force GW10 to discharge (load-share assist)
@@ -130,7 +131,7 @@ class MonitorState:
                 "last_write_at": None,
                 "last_write_result": None,
             },
-            "savings": {"date": None, "grid_cost_today_czk": 0.0},
+            "savings": {"date": None, "grid_cost_today_czk": 0.0, "shuttle_kwh_today": 0.0, "shuttle_loss_czk_today": 0.0},
             "stats": {"restarts": 0, "actions_total": 0, "first_boot": None, "grid_cost_total_czk": 0.0},
         }
 
@@ -214,11 +215,19 @@ class MonitorState:
             today = datetime.now().date().isoformat()
             sv = self.status.get("savings") or {}
             if sv.get("date") != today:
-                sv = {"date": today, "grid_cost_today_czk": 0.0}
+                sv = {"date": today, "grid_cost_today_czk": 0.0, "shuttle_kwh_today": 0.0, "shuttle_loss_czk_today": 0.0}
             gw20 = (sample.get("readings") or {}).get("gw20", {})
             meter = as_number(gw20.get("meter_active_power_total"))
             cost = logic.interval_cost_czk(meter, price_now, interval_s)
             sv["grid_cost_today_czk"] = round(sv.get("grid_cost_today_czk", 0.0) + cost, 4)
+            state = logic.classify_energy_state(sample)
+            if state in ("gw10_to_gw20", "gw20_to_gw10"):
+                g10 = (sample.get("readings") or {}).get("gw10", {})
+                b10 = abs(as_number(g10.get("pbattery1")) or 0.0)
+                b20 = abs(as_number(gw20.get("pbattery1")) or 0.0)
+                skwh = logic.interval_energy_kwh(min(b10, b20), interval_s)
+                sv["shuttle_kwh_today"] = round(sv.get("shuttle_kwh_today", 0.0) + skwh, 4)
+                sv["shuttle_loss_czk_today"] = round(sv.get("shuttle_loss_czk_today", 0.0) + skwh * 0.2 * (price_now or 0.0), 4)
             self.status["savings"] = sv
             st = self.status.get("stats") or {}
             st["grid_cost_total_czk"] = round(st.get("grid_cost_total_czk", 0.0) + cost, 4)
@@ -456,6 +465,9 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
         and clear_counts.get("gw10_to_gw20", 0) == 0
         and clear_counts.get("gw20_to_gw10", 0) == 0
     )
+    # GW20 charging is the root condition that makes GW10 re-shuttle; only restore
+    # GW10 to AUTO once GW20 is no longer charging (prevents STANDBY<->AUTO oscillation).
+    gw20_calm = bool(recent_clear) and not any(logic.gw20_charging(s) for s in recent_clear)
 
     valids = valid_samples(samples)
     latest_valid = valids[-1] if valids else None
@@ -550,6 +562,9 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
             return make_control_result("apply" if apply_enabled else "dry-run", "restore_auto", "blocked", f"{reason} Minimum standby hold time has not elapsed.", current_mode, GW10_AUTO)
         if not stable_clear:
             return make_control_result("apply" if apply_enabled else "dry-run", "restore_auto", "blocked", "Recent samples are not stable enough to restore AUTO.", current_mode, GW10_AUTO)
+        force_release = standby_age is not None and standby_age >= MAX_STANDBY_SECONDS
+        if not gw20_calm and not force_release:
+            return make_control_result("apply" if apply_enabled else "dry-run", "restore_auto", "blocked", "GW20 is still charging — keeping GW10 in STANDBY to prevent immediate re-shuttle (anti-oscillation).", current_mode, GW10_AUTO)
         if in_cooldown:
             return make_control_result("apply" if apply_enabled else "dry-run", "restore_auto", "blocked", "Write cooldown is still active.", current_mode, GW10_AUTO)
         if not apply_enabled:

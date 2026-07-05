@@ -62,6 +62,17 @@ def classify_energy_state(sample, threshold_w=300):
     return "normal"
 
 
+def gw20_charging(sample, threshold_w=300):
+    """True when GW20's battery is actively charging (the condition that causes the
+    secondary to shuttle). Used to avoid restoring GW10 to AUTO too early."""
+    g20 = (sample.get("readings") or {}).get("gw20", {})
+    b20 = as_number(g20.get("pbattery1"))
+    m20 = str(g20.get("battery_mode_label") or "").lower()
+    if b20 is None:
+        return False
+    return m20 == "charge" and abs(b20) > threshold_w
+
+
 def price_advice(level):
     """Human advice derived from the spot price level (low/medium/high)."""
     lv = str(level or "").lower()
