@@ -1,0 +1,39 @@
+name: Build add-on images
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "goodwe_ems/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        arch: [aarch64, amd64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push ${{ matrix.arch }}
+        uses: home-assistant/builder@master
+        with:
+          args: |
+            --${{ matrix.arch }} \
+            --target goodwe_ems \
+            --image "{arch}-hassio-goodwe-ems" \
+            --docker-hub "ghcr.io/roskodav" \
+            --addon
