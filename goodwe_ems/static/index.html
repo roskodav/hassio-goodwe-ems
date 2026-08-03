@@ -660,13 +660,14 @@
           (gt < 0 ? "vyděláno na síti" : "zaplaceno za síť") + " za spotové ceny (od 5. 7.)";
       }
 
-      // Koordinátor: rozpětí konzervativní–horní odhad (horní = bez 0,6 diskontu)
+      // Koordinátor: konzervativní až plný kontrafaktuál (co by se ztratilo bez něj)
       const cs = Number(st.coordinator_saved_total_czk);
+      const csUp = Number(st.coordinator_saved_upper_total_czk);
       const prevT = Number(st.coordinator_prevented_kwh_total);
       document.getElementById("coordSaved").textContent =
-        Number.isFinite(cs) ? `${cs.toFixed(0)}–${(cs / 0.6).toFixed(0)} Kč` : "—";
+        Number.isFinite(cs) ? `${cs.toFixed(0)}–${(Number.isFinite(csUp) ? csUp : cs / 0.6).toFixed(0)} Kč` : "—";
       document.getElementById("coordSavedDetail").textContent =
-        `konzervativní–horní odhad · zabráněno ${Number.isFinite(prevT) ? prevT.toFixed(1) : "—"}+ kWh přelévání` +
+        `konzervativně až plný odhad „bez koordinátoru" · zabráněno ${Number.isFinite(prevT) ? prevT.toFixed(1) : "—"}+ kWh přelévání` +
         (Number(sv.coordinator_saved_today_czk) > 0.05 ? ` · dnes +${Number(sv.coordinator_saved_today_czk).toFixed(1)} Kč` : "");
 
       const cost = sv.grid_cost_today_czk;

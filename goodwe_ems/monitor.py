@@ -130,10 +130,15 @@ EMPTY_DAY = {
 }
 
 # Historical seed (offline analysis of 2026-07-04..2026-08-03 CSV): the coordinator
-# prevented ~20.5 kWh of shuttling in 127 episodes ≈ 43 CZK incl. battery wear.
+# prevented ~20.5 kWh of shuttling in 127 episodes ≈ 43 CZK incl. battery wear
+# (conservative: standby windows only). Full counterfactual — chained conflict
+# periods (66x measured direction ping-pong, no capacity cap): ~77 kWh transfer,
+# ~19 kWh lost ≈ 163 CZK/month incl. wear. Upper accrues at the measured ratio.
+COUNTERFACTUAL_RATIO = 3.8  # full-counterfactual / conservative (163/43 from data)
 STATS_SEED = {
     "coordinator_prevented_kwh_total": 20.5,
     "coordinator_saved_total_czk": 43.0,
+    "coordinator_saved_upper_total_czk": 163.0,
     "import_cost_total_czk": 0.0,
     "export_earn_total_czk": 0.0,
     "solar_saved_total_czk": 0.0,
@@ -307,6 +312,8 @@ class MonitorState:
                 saved = prev_kwh * (SHUTTLE_LOSS_FACTOR * (price_now or 2.5) + BATTERY_WEAR_CZK_PER_KWH)
                 bump("coordinator_prevented_kwh_today", prev_kwh, "coordinator_prevented_kwh_total")
                 bump("coordinator_saved_today_czk", saved, "coordinator_saved_total_czk")
+                st["coordinator_saved_upper_total_czk"] = round(
+                    st.get("coordinator_saved_upper_total_czk", 0.0) + saved * COUNTERFACTUAL_RATIO, 4)
 
             self.status["savings"] = sv
             self.status["stats"] = st
