@@ -127,6 +127,8 @@ EMPTY_DAY = {
     "solar_saved_today_czk": 0.0,
     "coordinator_prevented_kwh_today": 0.0,
     "coordinator_saved_today_czk": 0.0,
+    "spot_sim_kwh_today": 0.0,
+    "spot_sim_earn_today_czk": 0.0,
 }
 
 # Historical seed (offline analysis of 2026-07-04..2026-08-03 CSV): the coordinator
@@ -134,7 +136,17 @@ EMPTY_DAY = {
 # (conservative: standby windows only). Full counterfactual — chained conflict
 # periods (66x measured direction ping-pong, no capacity cap): ~77 kWh transfer,
 # ~19 kWh lost ≈ 163 CZK/month incl. wear. Upper accrues at the measured ratio.
-COUNTERFACTUAL_RATIO = 3.8  # full-counterfactual / conservative (163/43 from data)
+COUNTERFACTUAL_RATIO = _envf("EMS_CF_RATIO", 3.8)  # full-counterfactual / conservative (163/43 from data)
+
+# --- Spot arbitrage planner (GW10 only; GW20 stays untouched) ---
+# "sim" computes the plan + simulated earnings without writing anything;
+# "off" disables. Live mode intentionally not implemented until sim proves out.
+SPOT_MODE = str(os.environ.get("EMS_SPOT", "sim")).strip().lower()
+SPOT_CHEAP_HOURS = int(_envf("EMS_SPOT_CHEAP_HOURS", 4))
+SPOT_EXP_HOURS = int(_envf("EMS_SPOT_EXP_HOURS", 4))
+SPOT_SOC_FLOOR = _envf("EMS_SPOT_SOC_FLOOR", 30)
+SPOT_SOC_CEILING = _envf("EMS_SPOT_SOC_CEILING", 95)
+SPOT_SIM_POWER_W = _envf("EMS_SPOT_SIM_POWER_W", 3000)  # assumed arbitrage power in sim
 STATS_SEED = {
     "coordinator_prevented_kwh_total": 20.5,
     "coordinator_saved_total_czk": 43.0,
@@ -142,7 +154,29 @@ STATS_SEED = {
     "import_cost_total_czk": 0.0,
     "export_earn_total_czk": 0.0,
     "solar_saved_total_czk": 0.0,
+    "spot_sim_earn_total_czk": 0.0,
 }
+
+
+def spot_plan_snapshot(prices, gw10_soc):
+    """Current spot-arbitrage plan (pure computation, no writes)."""
+    if SPOT_MODE == "off" or not prices:
+        return {"mode": "off"}
+    today = prices.get("today") or []
+    cheap, expensive = logic.spot_windows(today, SPOT_CHEAP_HOURS, SPOT_EXP_HOURS)
+    hour = prices.get("hour")
+    hour = hour if hour is not None else datetime.now().hour
+    act = logic.spot_action(hour, cheap, expensive, gw10_soc, SPOT_SOC_FLOOR, SPOT_SOC_CEILING)
+    cheap_prices = [h.get("czk") for h in today if h.get("hour") in cheap and h.get("czk") is not None]
+    basis = sum(cheap_prices) / len(cheap_prices) if cheap_prices else None
+    return {
+        "mode": SPOT_MODE,
+        "charge_hours": cheap,
+        "discharge_hours": expensive,
+        "cheap_basis_czk": round(basis, 2) if basis is not None else None,
+        "now": act,
+        "target": "GW10K-ET (18 kWh)",
+    }
 
 
 class MonitorState:
@@ -196,6 +230,7 @@ class MonitorState:
                 "self_sufficiency": extras["self_sufficiency"],
                 "phases": extras["phases"],
                 "real_load": extras["real_load"],
+                "spot_plan": spot_plan_snapshot(prices, as_number(((latest or {}).get("readings") or {}).get("gw10", {}).get("battery_soc"))),
                 "savings": status.get("savings", {}),
                 "stats": status.get("stats", {}),
             }
@@ -314,6 +349,18 @@ class MonitorState:
                 bump("coordinator_saved_today_czk", saved, "coordinator_saved_total_czk")
                 st["coordinator_saved_upper_total_czk"] = round(
                     st.get("coordinator_saved_upper_total_czk", 0.0) + saved * COUNTERFACTUAL_RATIO, 4)
+
+            # spot arbitrage simulation: what the planner would have earned now
+            if SPOT_MODE == "sim":
+                g10 = readings.get("gw10", {})
+                soc10 = as_number(g10.get("battery_soc"))
+                plan = spot_plan_snapshot(prices, soc10)
+                act = (plan.get("now") or {}).get("action")
+                if act in ("charge", "discharge"):
+                    gain = logic.spot_sim_gain_czk(act, price_now, plan.get("cheap_basis_czk"), SPOT_SIM_POWER_W, interval_s)
+                    if gain:
+                        bump("spot_sim_earn_today_czk", gain, "spot_sim_earn_total_czk")
+                        bump("spot_sim_kwh_today", logic.interval_energy_kwh(SPOT_SIM_POWER_W, interval_s))
 
             self.status["savings"] = sv
             self.status["stats"] = st

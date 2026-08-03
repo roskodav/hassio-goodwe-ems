@@ -169,7 +169,8 @@
           <div class="pstat"><div class="label">Dnes min / max</div><div class="value" id="priceMinMax">—</div><div class="small" id="priceHint">—</div></div>
         </div>
         <canvas id="priceChart" width="960" height="170"></canvas>
-        <p class="small" id="priceMeta">Zdroj: spotovaelektrina.cz · zelená = levno, oranžová = střední, červená = draho · orámovaná hodina = teď</p>
+        <p class="small" id="priceMeta">Zdroj: spotovaelektrina.cz · zelená = levno, oranžová = střední, červená = draho · orámovaná hodina = teď · ▂ pod sloupcem: zelená = okno nabíjení, červená = okno vybíjení</p>
+        <p id="spotPlanText" style="margin:8px 0 0; font-weight:650"></p>
       </section>
 
       <!-- STAT DLAŽDICE -->
@@ -596,7 +597,7 @@
       const m = String(level || "").toLowerCase();
       return m === "low" ? "levno" : m === "high" ? "draho" : m === "medium" ? "střední" : "—";
     }
-    function renderPrice(p) {
+    function renderPrice(p, plan, sv, st) {
       p = p || {};
       const kc = v => (v != null && Number.isFinite(Number(v))) ? `${Number(v).toFixed(2)} Kč/kWh` : "—";
       document.getElementById("priceNow").textContent = kc(p.now);
@@ -612,9 +613,26 @@
         m === "high" ? "Draho → vybíjej baterii, neber ze sítě"
         : m === "low" ? "Levno → vhodné nabít ze sítě"
         : m === "medium" ? "Střední cena" : "—";
-      drawPriceBars(p);
+      drawPriceBars(p, plan);
+
+      // spotový plán + simulovaný výnos
+      const sp = document.getElementById("spotPlanText");
+      if (sp) {
+        if (!plan || plan.mode === "off" || !(plan.charge_hours || []).length) {
+          sp.textContent = "";
+        } else {
+          const rng = a => a.length ? `${a[0]}–${a[a.length - 1] + 1} h` : "—";
+          const actCz = { charge: "⚡ NABÍJET", discharge: "💰 VYBÍJET (prodávat)", idle: "čekat" };
+          const now = plan.now || {};
+          const simToday = Number((sv || {}).spot_sim_earn_today_czk);
+          const simTotal = Number((st || {}).spot_sim_earn_total_czk);
+          sp.innerHTML = `Spotový plán (${plan.mode === "sim" ? "simulace — zatím nezapisuje" : plan.mode}) pro ${plan.target}: ` +
+            `nabíjet ${rng(plan.charge_hours)} · vybíjet ${rng(plan.discharge_hours)} · teď: <b>${actCz[now.action] || "—"}</b> <span class="small">(${now.reason || ""})</span>` +
+            (Number.isFinite(simToday) ? ` · <span style="color:var(--green)">simulace by dnes vynesla ${simToday.toFixed(1)} Kč${Number.isFinite(simTotal) ? `, celkem ${simTotal.toFixed(0)} Kč` : ""}</span>` : "");
+        }
+      }
     }
-    function drawPriceBars(p) {
+    function drawPriceBars(p, plan) {
       const c = document.getElementById("priceChart");
       if (!c) return;
       const ctx = c.getContext("2d");
@@ -639,6 +657,15 @@
         ctx.globalAlpha = 1;
         if (x.hour === nowHour) { ctx.strokeStyle = "#17201b"; ctx.lineWidth = 2; ctx.strokeRect(xx + 1, yy, Math.max(1, bw - 2), bh); }
       });
+      // okna spotového plánu: podtržení sloupců (zelená = nabíjet, červená = vybíjet)
+      if (plan && plan.mode !== "off") {
+        const ch = new Set(plan.charge_hours || []), ex = new Set(plan.discharge_hours || []);
+        arr.forEach((x, i) => {
+          if (!ch.has(x.hour) && !ex.has(x.hour)) return;
+          ctx.fillStyle = ch.has(x.hour) ? cvar("--green") : cvar("--red");
+          ctx.fillRect(pad + i * bw + 1, pad + h + 3, Math.max(1, bw - 2), 4);
+        });
+      }
       ctx.fillStyle = cvar("--muted"); ctx.font = "10px sans-serif"; ctx.textAlign = "center";
       arr.forEach((x, i) => { if (x.hour % 3 === 0) ctx.fillText(String(x.hour), pad + i * bw + bw / 2, c.height - 8); });
       ctx.textAlign = "left"; ctx.fillText(max.toFixed(1) + " Kč", 2, pad + 8);
@@ -884,7 +911,7 @@
         `${id} ${c.ok ? "online" : "offline"}`).join(" · ") || "čekám…");
 
       drawChart((data.samples || []).slice(-90));
-      renderPrice(data.prices);
+      renderPrice(data.prices, data.spot_plan, data.savings, data.stats);
       renderStats(data);
       renderPhases(data);
     }

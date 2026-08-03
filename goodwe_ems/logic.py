@@ -222,6 +222,49 @@ def assist_needed(sample, cfg):
     )
 
 
+def spot_windows(today, n_cheap=4, n_expensive=4):
+    """Pick the cheapest hours (charge window) and most expensive hours
+    (discharge window) from today's price list [{hour, czk}, ...]."""
+    priced = [(h.get("hour"), h.get("czk")) for h in (today or []) if h.get("czk") is not None and h.get("hour") is not None]
+    if len(priced) < 6:
+        return [], []
+    by_price = sorted(priced, key=lambda x: x[1])
+    cheap = sorted(h for h, _ in by_price[:n_cheap])
+    expensive = sorted(h for h, _ in by_price[-n_expensive:])
+    return cheap, expensive
+
+
+def spot_action(hour, cheap_hours, expensive_hours, soc, floor=30, ceiling=95):
+    """What the spot plan wants right now, guarded by SOC limits."""
+    if hour in (expensive_hours or []):
+        if soc is not None and soc <= floor:
+            return {"action": "idle", "reason": f"špička, ale SOC {soc:.0f} % je na dně ({floor} %)"}
+        return {"action": "discharge", "reason": "drahá hodina — vybíjet baterii"}
+    if hour in (cheap_hours or []):
+        if soc is not None and soc >= ceiling:
+            return {"action": "idle", "reason": f"levná hodina, ale baterie plná ({soc:.0f} %)"}
+        return {"action": "charge", "reason": "levná hodina — nabíjet baterii"}
+    return {"action": "idle", "reason": "mimo cenová okna — normální self-use"}
+
+
+def spot_sim_gain_czk(action, price_now, cheap_basis, power_w, interval_s, efficiency=0.85):
+    """Simulated arbitrage gain for one interval.
+
+    discharge: earn spread between now-price and (charge basis / efficiency).
+    charge at negative price: get paid to charge.
+    """
+    p = as_number(price_now)
+    if p is None:
+        return 0.0
+    kwh = interval_energy_kwh(power_w, interval_s)
+    if action == "discharge":
+        basis = (as_number(cheap_basis) or 0.0) / efficiency
+        return max(0.0, (p - basis)) * kwh
+    if action == "charge" and p < 0:
+        return abs(p) * kwh
+    return 0.0
+
+
 def action_log_summary(rows, recent=20):
     """Summarize actions.csv rows (list of dicts) into counts + recent list."""
     rows = rows or []

@@ -246,6 +246,52 @@ class TestGw20Charging(unittest.TestCase):
         self.assertFalse(logic.gw20_charging(sample(gw20={"battery_mode_label": "Charge"})))
 
 
+class TestSpotPlan(unittest.TestCase):
+    TODAY = [{"hour": h, "czk": c} for h, c in enumerate(
+        [3.0, 2.9, 2.8, 2.7, 2.5, 2.4, 2.2, 2.0, 1.5, 0.8, 0.2, -0.1,
+         -0.2, 0.1, 0.5, 1.2, 2.1, 3.2, 4.5, 5.0, 4.8, 4.2, 3.6, 3.1])]
+
+    def test_windows(self):
+        cheap, exp = logic.spot_windows(self.TODAY, 4, 4)
+        self.assertEqual(cheap, [10, 11, 12, 13])   # midday cheapest
+        self.assertEqual(exp, [18, 19, 20, 21])     # evening peak
+
+    def test_windows_insufficient_data(self):
+        self.assertEqual(logic.spot_windows([{"hour": 1, "czk": 2.0}]), ([], []))
+
+    def test_action_discharge_at_peak(self):
+        a = logic.spot_action(19, [10, 11], [18, 19], soc=70)
+        self.assertEqual(a["action"], "discharge")
+
+    def test_action_discharge_blocked_by_floor(self):
+        a = logic.spot_action(19, [10, 11], [18, 19], soc=25, floor=30)
+        self.assertEqual(a["action"], "idle")
+
+    def test_action_charge_when_cheap(self):
+        a = logic.spot_action(11, [10, 11], [18, 19], soc=50)
+        self.assertEqual(a["action"], "charge")
+
+    def test_action_charge_blocked_when_full(self):
+        a = logic.spot_action(11, [10, 11], [18, 19], soc=96, ceiling=95)
+        self.assertEqual(a["action"], "idle")
+
+    def test_action_idle_between(self):
+        self.assertEqual(logic.spot_action(15, [10, 11], [18, 19], soc=50)["action"], "idle")
+
+    def test_sim_gain_discharge(self):
+        # discharge 3600 W for 1 h at 5.0, basis 0.0 -> 5 Kč
+        g = logic.spot_sim_gain_czk("discharge", 5.0, 0.0, 3600, 3600)
+        self.assertAlmostEqual(g, 3.6 * 5.0, places=2)
+
+    def test_sim_gain_charge_negative_price(self):
+        g = logic.spot_sim_gain_czk("charge", -0.5, 0.0, 2000, 3600)
+        self.assertAlmostEqual(g, 2.0 * 0.5, places=2)
+
+    def test_sim_gain_zero_when_idle_or_no_price(self):
+        self.assertEqual(logic.spot_sim_gain_czk("idle", 5.0, 0.0, 3000, 3600), 0.0)
+        self.assertEqual(logic.spot_sim_gain_czk("discharge", None, 0.0, 3000, 3600), 0.0)
+
+
 class TestActionLog(unittest.TestCase):
     def test_summary(self):
         rows = [{"operation": "set_gw10_ems_mode"}, {"operation": "set_gw10_ems_mode"},
