@@ -34,6 +34,15 @@
     .actionlist .row { display:grid; grid-template-columns:110px 1fr; gap:10px; padding:6px 0; border-bottom:1px solid var(--line); }
     .actionlist .t { color:var(--muted); }
     .op-standby { color:var(--red); font-weight:700; } .op-restore { color:var(--green); font-weight:700; } .op-assist { color:var(--blue); font-weight:700; }
+    .opt-head { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:10px; }
+    .opt-title { font-size:18px; font-weight:760; line-height:1.25; }
+    .opt-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-top:12px; }
+    .gate { border:1px solid var(--line); border-radius:8px; padding:9px 10px; background:rgba(244,241,234,.62); min-height:62px; }
+    .gate .mark { font-size:17px; font-weight:850; }
+    .gate.ok .mark { color:var(--green); }
+    .gate.no .mark { color:var(--red); }
+    .gate .glabel { display:block; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+    .gate .gval { display:block; font-weight:700; margin-top:2px; }
     * { box-sizing: border-box; }
     body {
       margin: 0; color: var(--ink);
@@ -138,6 +147,7 @@
       header { grid-template-columns: 1fr; }
       .third, .two-third { grid-column: span 12; }
       .cards { grid-template-columns: 1fr; }
+      .opt-grid { grid-template-columns: 1fr 1fr; }
     }
   </style>
 </head>
@@ -206,6 +216,19 @@
         </div>
       </section>
 
+      <!-- CHYTRÉ VYSVĚTLENÍ ŘÍZENÍ -->
+      <section class="panel wide">
+        <div class="opt-head">
+          <div>
+            <h2 style="margin-bottom:4px">Proč se to teď chová právě takhle</h2>
+            <div class="opt-title" id="optHeadline">Čekám na data…</div>
+          </div>
+          <span class="tag" id="optAction">monitoring</span>
+        </div>
+        <ul id="optReasons" style="margin-top:6px"></ul>
+        <div class="opt-grid" id="optGates"></div>
+      </section>
+
       <!-- DNEŠNÍ ENERGETICKÁ BILANCE -->
       <section class="panel wide">
         <h2>Dnešní bilance <span class="small" style="font-weight:400" id="balanceDate"></span></h2>
@@ -223,16 +246,50 @@
 
       <!-- JAK TO FUNGUJE -->
       <section class="panel wide how">
-        <h2>Jak to funguje</h2>
-        <p><b>Stav instalace.</b> Dva samostatné hybridní měniče GoodWe na jedné třífázové síti, každý s <b>vlastní baterií</b> a <b>vlastním chytrým elektroměrem</b>. Elektroměry jsou zapojené <b>kaskádově</b> (za sebou), takže si měniče navzájem „vidí“ do toku energie.</p>
-        <p><b>Problém.</b> Oba jedou v režimu <b>AUTO / self‑use</b> a každý se sám snaží držet nulu na svém elektroměru. V noci se stane, že <b>GW10 vybíjí</b> svoji baterii, <b>GW20</b> to vyhodnotí jako přebytek a <b>nabíjí</b> si svoji baterii. Energie zbytečně teče z jedné baterie do druhé přes AC se ztrátami (round‑trip cca 20–30 %).</p>
-        <p><b>Co dělá tento koordinátor.</b> <b>GW20 řídí Delta Green</b> (agregátor) — toho se nedotýkáme, jen ho čteme jako referenci. <b>GW10 „následuje“ GW20:</b> kdykoli by baterie GW10 tekla proti GW20 (jeden nabíjí, druhý vybíjí = přelévání, v obou směrech), přepne koordinátor <b>GW10 do BATTERY_STANDBY</b>; jinak jede GW10 vlastní self-use. Je to <b>totéž nastavení jako v SolarGo</b> (EMS Mód, registr 47511) — bezpečné a vratné. Píše se <b>jen do GW10, nikdy do GW20</b>. Po 12 klidných vzorcích a min. 15 min vrátí GW10 zpět do AUTO.</p>
+        <h2>Jak to celé funguje</h2>
+
+        <h3 style="margin-top:0">1 · Co je v instalaci</h3>
+        <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:6px">
+          <tr style="text-align:left;color:var(--muted)">
+            <th style="padding:6px 10px 6px 0"></th><th style="padding:6px 10px 6px 0">GW20K‑ET</th><th>GW10K‑ET</th></tr>
+          <tr><td style="padding:4px 10px 4px 0;color:var(--muted)">Adresa</td><td>10.0.1.76</td><td>10.0.1.10</td></tr>
+          <tr><td style="padding:4px 10px 4px 0;color:var(--muted)">Baterie</td><td>~24,7 kWh</td><td>~18 kWh</td></tr>
+          <tr><td style="padding:4px 10px 4px 0;color:var(--muted)">Kdo řídí</td>
+              <td><b style="color:var(--green)">Delta Green (Proteus)</b></td><td><b style="color:var(--blue)">tato aplikace</b></td></tr>
+        </table>
+        </div>
+        <p style="margin-top:10px">Oba střídače mají vlastní chytrý elektroměr, ale <b>oba měří tentýž bod sítě</b> (ověřeno na 218 tisících vzorcích: shoda 99,6 %). Proto jsou údaje o „spotřebě domu“ z jednotlivých střídačů <b>zkreslené</b> a skutečnou spotřebu počítáme z celkové bilance.</p>
+
+        <h3>2 · Jaký problém to řeší</h3>
+        <p>Oba střídače jely v režimu AUTO a každý se snažil vynulovat <b>stejný</b> elektroměr. Docházelo k tomu, že jeden baterii vybíjel a druhý tu samou energii rovnou nabíjel do své. Energie kroužila přes střídače <b>se ztrátou asi 25 %</b> a zbytečně opotřebovávala baterie. Naměřili jsme 120 takových period, nejdelší trvala 16,4 hodiny.</p>
+
+        <h3>3 · Co aplikace dělá</h3>
+        <p>Každých 5 sekund čte oba střídače. Zasahuje <b>výhradně do GW10, nikdy do GW20</b> — mění jen jeho EMS režim (stejné nastavení, jaké nabízí aplikace SolarGo), takže je to bezpečné a kdykoli vratné.</p>
+        <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:6px">
+          <tr style="text-align:left;color:var(--muted)"><th style="padding:6px 12px 6px 0">Situace</th><th>Reakce</th></tr>
+          <tr style="border-top:1px solid var(--line)"><td style="padding:6px 12px 6px 0">Baterie se přelévají mezi sebou</td><td>GW10 → <b>STANDBY</b> (zastaví se)</td></tr>
+          <tr style="border-top:1px solid var(--line)"><td style="padding:6px 12px 6px 0">GW20 stále nabíjí</td><td>GW10 <b>se nevrací</b>, aby se to hned neopakovalo (max 2 h)</td></tr>
+          <tr style="border-top:1px solid var(--line)"><td style="padding:6px 12px 6px 0">Klid po dobu 12 vzorků a 15 minut</td><td>GW10 → <b>AUTO</b> (běžný provoz)</td></tr>
+          <tr style="border-top:1px solid var(--line)"><td style="padding:6px 12px 6px 0">GW10 hltá přebytek z panelů a GW20 hladoví</td><td>GW10 pauznut, <b>přebytek nabíjí GW20</b></td></tr>
+          <tr style="border-top:1px solid var(--line)"><td style="padding:6px 12px 6px 0">GW20 je na dně a maká, GW10 je plný</td><td>GW10 <b>vypomůže vybíjením</b></td></tr>
+          <tr style="border-top:1px solid var(--line)"><td style="padding:6px 12px 6px 0">Výpadek komunikace nebo nejasný stav</td><td><b>nezapisuje se nic</b></td></tr>
+        </table>
+        </div>
+
+        <h3>4 · Spolupráce s Delta Green</h3>
+        <p><b>Proteus je aktivní a řídí GW20</b> — má zapnutou spotovou optimalizaci i obchodování flexibility a vlastní hodinový plán (nabít přes poledne, prodat ve večerní špičce). Pozná se podle výkonového příkazu, který posílá do GW20.</p>
+        <p><b>Konflikt nehrozí:</b> Delta Green píše jen do GW20, tato aplikace jen do GW10. Naopak si <b>pomáhají</b> — když GW10 přestane brát přebytky z panelů, má Proteus čím nabít baterii GW20 na večerní prodej.</p>
+
+        <h3>5 · Spotové ceny</h3>
+        <p>Ceny se stahují každých 15 minut. Plánovač vybere 4 nejlevnější hodiny dne (vhodné nabíjet) a 4 nejdražší (vhodné prodávat) — v grafu cen výše jsou podbarvené zeleně a červeně. Zatím běží <b>jen v simulaci</b>: nic nezapisuje, pouze počítá, kolik by vydělal. Ostrý provoz zapneme, až budou výsledky ověřené.</p>
+
         <div class="pill-row">
-          <span class="tag">Zapisuje jen: EMS mód GW10 &nbsp;AUTO ⇄ STANDBY ⇄ DISCHARGE</span>
-          <span class="tag">Sdílení zátěže: GW10 pomůže vybíjet, když je GW20 nízko a plný GW10 zahálí</span>
-          <span class="tag">Nesahá na: grid code, zálohu, firmware, GW20</span>
-          <span class="tag">Při výpadku komunikace: nezapisuje nic</span>
-          <span class="tag">Po zápisu ověří + 5 min cooldown</span>
+          <span class="tag">Zapisuje jen EMS režim GW10 (AUTO ⇄ STANDBY ⇄ DISCHARGE)</span>
+          <span class="tag">Nesahá na: GW20, grid code, zálohu, firmware</span>
+          <span class="tag">Každý zápis se ověří · 5 min pauza mezi zásahy</span>
+          <span class="tag">Při výpadku komunikace nezasahuje</span>
         </div>
       </section>
 
@@ -522,8 +579,10 @@
       setText("l-house", houseOn ? "spotřeba " + fmt(houseW) : "spotřeba");
 
       const gridOn = meter20 != null && Math.abs(meter20) > 50;
-      setEdge("e-grid", gridOn, "blue", false, "end");
-      setText("l-grid", "měřák " + fmt(meter20));
+      const exporting = meter20 != null && meter20 > 50;
+      const importing = meter20 != null && meter20 < -50;
+      setEdge("e-grid", gridOn, "blue", exporting, exporting ? "start" : "end");
+      setText("l-grid", exporting ? "přetok " + fmt(meter20) : importing ? "odběr " + fmt(Math.abs(meter20)) : "měřák");
 
       applyBat("e-bat20", "l-bat20", m20, bat20);
       applyBat("e-bat10", "l-bat10", m10, bat10);
@@ -774,6 +833,39 @@
         `Nevyváženost ${Math.round(p.spread)} W (nejvíc ${p.dominant}). Záporné = odběr ze sítě, kladné = dodávka.`;
     }
 
+    function renderOptimizer(data) {
+      const opt = data.optimizer || {};
+      const action = String(opt.action || "monitoring");
+      setText("optHeadline", opt.headline || "Čekám na data…");
+      const tag = document.getElementById("optAction");
+      if (tag) {
+        const actionCz = {
+          standby: "ochrana",
+          assist: "GW10 pomáhá",
+          assist_ready: "připraveno pomoci",
+          charge_balance: "uvolnit GW20",
+          respect_proteus_export: "respektuji Proteus",
+          watch_proteus: "hlídám Proteus",
+          price_watch: "cenová špička",
+          monitoring: "monitoring",
+          wait: "čekám"
+        };
+        tag.textContent = actionCz[action] || action;
+        tag.style.borderColor = action.includes("assist") ? "rgba(36,108,145,.45)" : action.includes("export") ? "rgba(20,122,92,.45)" : "var(--line)";
+      }
+      const rs = document.getElementById("optReasons");
+      if (rs) rs.innerHTML = (opt.reasons || []).map(r => `<li>${r}</li>`).join("");
+      const gates = document.getElementById("optGates");
+      if (gates) {
+        gates.innerHTML = (opt.gates || []).map(g => `
+          <div class="gate ${g.ok ? "ok" : "no"}">
+            <span class="mark">${g.ok ? "✓" : "×"}</span>
+            <span class="glabel">${g.label || ""}</span>
+            <span class="gval">${g.value || ""}</span>
+          </div>`).join("");
+      }
+    }
+
     async function fetchExtras() {
       try {
         const [h, a] = await Promise.all([
@@ -928,6 +1020,7 @@
       renderPrice(data.prices, data.spot_plan, data.savings, data.stats);
       renderStats(data);
       renderPhases(data);
+      renderOptimizer(data);
     }
 
     async function refresh() {

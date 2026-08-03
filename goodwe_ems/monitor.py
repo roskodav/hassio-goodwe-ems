@@ -197,6 +197,106 @@ def spot_plan_snapshot(prices, gw10_soc):
     }
 
 
+def optimizer_snapshot(sample, prices, controller):
+    """Human-readable explanation of the current control choice.
+
+    This intentionally mirrors the safety gates in maybe_apply_control(): GW10 may
+    help even while Proteus is active, but only when the site is importing. During
+    export, forcing GW10 to discharge would mostly add sell power and battery wear.
+    """
+    if not sample:
+        return {"headline": "Čekám na první kompletní vzorek.", "action": "wait", "reasons": [], "gates": []}
+    readings = sample.get("readings") or {}
+    g10 = readings.get("gw10") or {}
+    g20 = readings.get("gw20") or {}
+    s10 = as_number(g10.get("battery_soc"))
+    s20 = as_number(g20.get("battery_soc"))
+    b10_mode, b10 = logic.battery_dir(g10)
+    b20_mode, b20 = logic.battery_dir(g20)
+    meter = as_number(g20.get("meter_active_power_total"))
+    import_w = max(0.0, -meter) if meter is not None else None
+    export_w = max(0.0, meter) if meter is not None else None
+    dg = bool((controller or {}).get("dg_dispatch"))
+    price_level = str((prices or {}).get("level") or "").lower()
+    state = logic.classify_energy_state(sample)
+    assist = classify_assist(sample)
+    starvation = logic.charge_starvation(sample, STARVE_CFG)
+
+    def gate(label, ok, value=None):
+        return {"label": label, "ok": bool(ok), "value": value}
+
+    gates = [
+        gate("GW20 nízko", s20 is not None and s20 <= ASSIST_GW20_SOC_MAX, f"{s20:.0f} %" if s20 is not None else "n/a"),
+        gate("GW10 má rezervu", s10 is not None and s10 >= ASSIST_GW10_SOC_FLOOR, f"{s10:.0f} %" if s10 is not None else "n/a"),
+        gate("SOC rozdíl", s10 is not None and s20 is not None and (s10 - s20) >= ASSIST_SOC_GAP,
+             f"{(s10 - s20):.0f} b." if s10 is not None and s20 is not None else "n/a"),
+        gate("GW20 jede tvrdě", b20_mode == "discharge" and (b20 or 0) >= ASSIST_GW20_DISCHARGE_W,
+             f"{(b20 or 0):.0f} W"),
+        gate("dům importuje", import_w is not None and import_w >= ASSIST_IMPORT_MIN,
+             f"{import_w:.0f} W" if import_w is not None else "n/a"),
+    ]
+
+    if state in ("gw10_to_gw20", "gw20_to_gw10"):
+        return {
+            "headline": "Priorita: zastavit přelévání mezi bateriemi.",
+            "action": "standby",
+            "reasons": ["Jeden střídač baterii vybíjí a druhý ji současně nabíjí.", "Nejlevnější energie je ta, která se neztratí na AC převodu."],
+            "gates": gates,
+        }
+    if (controller or {}).get("state") == "gw10_assist":
+        return {
+            "headline": "GW10 právě pomáhá nést zátěž.",
+            "action": "assist",
+            "reasons": ["GW20 je nízko a zároveň objekt importuje ze sítě.", "Jakmile import zmizí nebo GW20/GW10 narazí na SOC ochrany, GW10 se vrátí do AUTO."],
+            "gates": gates,
+        }
+    if starvation is True:
+        return {
+            "headline": "GW10 má uvolnit přebytek pro GW20.",
+            "action": "charge_balance",
+            "reasons": ["GW10 by jinak bral PV přebytek, zatímco hlavní baterie GW20 zaostává.", "Pauza GW10 zlepší využití Proteu bez přelévání přes baterie."],
+            "gates": gates,
+        }
+    if assist is True:
+        return {
+            "headline": "GW10 může bezpečně pomoci, protože objekt importuje.",
+            "action": "assist_ready",
+            "reasons": ["Pomoc je povolená i při Proteu, ale jen pokud chybí výkon pro dům.", "Při přetoku do sítě se assist nespouští, aby nevznikaly zbytečné cykly."],
+            "gates": gates,
+        }
+    if dg and export_w is not None and export_w >= 500:
+        return {
+            "headline": "GW10 zůstává stranou: GW20 právě prodává do sítě.",
+            "action": "respect_proteus_export",
+            "reasons": [
+                f"Na přípojce je přetok {export_w:.0f} W, takže další vybíjení GW10 by šlo hlavně do exportu.",
+                "Bez ověřeného výkonového limitu GW10 je účinnější nechat ho jako rezervu a neopotřebovávat druhou baterii.",
+                "Proteus řídí GW20 podle ceny; koordinátor zasáhne do GW10 až při importu, přelévání nebo hladovění GW20.",
+            ],
+            "gates": gates,
+        }
+    if dg:
+        return {
+            "headline": "Proteus řídí GW20, koordinátor drží ochranné brzdy.",
+            "action": "watch_proteus",
+            "reasons": ["GW10 se zapojí pouze při importu, přelévání nebo když GW10 bere PV a GW20 potřebuje nabít."],
+            "gates": gates,
+        }
+    if price_level == "high":
+        return {
+            "headline": "Drahá hodina: vybíjet dává smysl, ale jen bez zbytečného exportu.",
+            "action": "price_watch",
+            "reasons": ["GW20 zatím kryje dům nebo prodává podle plánu.", "GW10 se šetří, dokud není import nebo výrazný SOC problém."],
+            "gates": gates,
+        }
+    return {
+        "headline": "Systém je v monitoringu, zásah teď nedává ekonomický smysl.",
+        "action": "monitoring",
+        "reasons": ["Nevidím přelévání, importní nouzi ani hladovění GW20."],
+        "gates": gates,
+    }
+
+
 class MonitorState:
     def __init__(self, max_samples=720):
         self.lock = threading.Lock()
@@ -237,6 +337,7 @@ class MonitorState:
             prices = price.snapshot() if price else {}
             latest = samples[-1] if samples else None
             extras = compute_extras(latest, prices)
+            controller = dict(status.get("controller", {}))
             return {
                 "status": status,
                 "inverters": [
@@ -252,6 +353,7 @@ class MonitorState:
                 "self_sufficiency": extras["self_sufficiency"],
                 "phases": extras["phases"],
                 "real_load": extras["real_load"],
+                "optimizer": optimizer_snapshot(latest, prices, controller),
                 "spot_plan": spot_plan_snapshot(prices, as_number(((latest or {}).get("readings") or {}).get("gw10", {}).get("battery_soc"))),
                 "savings": status.get("savings", {}),
                 "stats": status.get("stats", {}),
@@ -627,8 +729,6 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
             STATE.update_controller(gw20_ems_mode=gw20_mode, gw20_power_limit=limit, dg_dispatch=dispatching)
         except Exception:
             pass
-    dg_active = bool(STATE.controller_snapshot().get("dg_dispatch"))
-
     cooldown = seconds_since_iso(controller.get("last_write_at"))
     in_cooldown = cooldown is not None and cooldown < WRITE_COOLDOWN_SECONDS
     shuttle_count = conflict_counts.get("gw10_to_gw20", 0) + conflict_counts.get("gw20_to_gw10", 0)
@@ -713,9 +813,10 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
         return make_control_result("apply", "restore_auto", result, reason, current_mode, GW10_AUTO)
 
     # Assist: GW20 low + discharging near max while GW10 is much fuller and the site
-    # imports -> GW10 shares the load (DISCHARGE_PV). Shuttle (handled above) wins.
-    if stable_assist and not dg_active and current_mode != GW10_BATTERY_STANDBY:
-        reason = "GW20 low SOC and discharging near max while GW10 is much fuller and the site imports -> GW10 assists (DISCHARGE_PV)."
+    # imports -> GW10 shares the load (DISCHARGE_PV). This is allowed even while
+    # Proteus is active, because the import gate proves the site needs the energy.
+    if stable_assist and current_mode != GW10_BATTERY_STANDBY:
+        reason = "GW20 low SOC and discharging near max while GW10 is much fuller and the site imports -> GW10 assists (DISCHARGE_PV). Allowed during Proteus only because import is present."
         if current_mode == GW10_DISCHARGE:
             STATE.update_controller(state="gw10_assist")
             return make_control_result("apply" if apply_enabled else "dry-run", "assist", "already_applied", reason, current_mode, GW10_DISCHARGE)
@@ -759,7 +860,7 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
         return make_control_result("apply", "restore_auto", result, reason, current_mode, GW10_AUTO)
 
     # Charge-balance trigger: pause GW10's charging so GW20 gets the surplus.
-    if stable_starvation and not dg_active and current_mode == GW10_AUTO and not in_cooldown:
+    if stable_starvation and current_mode == GW10_AUTO and not in_cooldown:
         reason = "GW10 hoards PV charge while GW20 starves at much lower SOC -> pause GW10 (charge-balance) so the surplus charges GW20."
         if not apply_enabled:
             return make_control_result("dry-run", "charge_pause", "would_apply", reason, current_mode, GW10_BATTERY_STANDBY)
