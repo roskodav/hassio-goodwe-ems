@@ -108,6 +108,37 @@ ASSIST_IMPORT_MIN = _envf("EMS_ASSIST_IMPORT_MIN", 400)        # site importing 
 ASSIST_IMPORT_STOP = _envf("EMS_ASSIST_IMPORT_STOP", 150)      # safety-stop below this import
 ASSIST_GW20_SOC_RECOVER = _envf("EMS_ASSIST_GW20_RECOVER", 45)  # stop once GW20 recovers to this
 
+SHUTTLE_LOSS_FACTOR = 0.25          # AC round-trip loss of battery-to-battery transfer
+BATTERY_WEAR_CZK_PER_KWH = 1.5      # LFP cycle wear cost per shuttled kWh
+PREVENTED_ASSUMED_FACTOR = 0.6      # conservative share of trigger power assumed avoided
+
+# Daily counters (reset at midnight); totals live in persistent stats.
+EMPTY_DAY = {
+    "date": None,
+    "grid_cost_today_czk": 0.0,
+    "shuttle_kwh_today": 0.0,
+    "shuttle_loss_czk_today": 0.0,
+    "pv_kwh_today": 0.0,
+    "load_kwh_today": 0.0,
+    "import_kwh_today": 0.0,
+    "export_kwh_today": 0.0,
+    "import_cost_today_czk": 0.0,
+    "export_earn_today_czk": 0.0,
+    "solar_saved_today_czk": 0.0,
+    "coordinator_prevented_kwh_today": 0.0,
+    "coordinator_saved_today_czk": 0.0,
+}
+
+# Historical seed (offline analysis of 2026-07-04..2026-08-03 CSV): the coordinator
+# prevented ~20.5 kWh of shuttling in 127 episodes ≈ 43 CZK incl. battery wear.
+STATS_SEED = {
+    "coordinator_prevented_kwh_total": 20.5,
+    "coordinator_saved_total_czk": 43.0,
+    "import_cost_total_czk": 0.0,
+    "export_earn_total_czk": 0.0,
+    "solar_saved_total_czk": 0.0,
+}
+
 
 class MonitorState:
     def __init__(self, max_samples=720):
@@ -131,7 +162,7 @@ class MonitorState:
                 "last_write_at": None,
                 "last_write_result": None,
             },
-            "savings": {"date": None, "grid_cost_today_czk": 0.0, "shuttle_kwh_today": 0.0, "shuttle_loss_czk_today": 0.0},
+            "savings": dict(EMPTY_DAY),
             "stats": {"restarts": 0, "actions_total": 0, "first_boot": None, "grid_cost_total_czk": 0.0},
         }
 
@@ -159,6 +190,7 @@ class MonitorState:
                 "advice": extras["advice"],
                 "self_sufficiency": extras["self_sufficiency"],
                 "phases": extras["phases"],
+                "real_load": extras["real_load"],
                 "savings": status.get("savings", {}),
                 "stats": status.get("stats", {}),
             }
@@ -209,28 +241,74 @@ class MonitorState:
         with self.lock:
             return dict(self.status["controller"])
 
-    def accumulate(self, sample, interval_s, price_now):
-        """Accumulate grid electricity cost (today + cumulative) from spot price."""
+    def accumulate(self, sample, interval_s, prices):
+        """Full energy accounting for one sample: grid cost, PV savings, shuttle
+        and coordinator-prevented shuttle (today + persistent totals)."""
+        prices = prices or {}
+        price_now = as_number(prices.get("now"))
+        price_buy = as_number(prices.get("buy")) or price_now
+        price_sell = as_number(prices.get("sell")) or price_now
+        readings = sample.get("readings") or {}
+        gw20 = readings.get("gw20", {})
         with self.lock:
             today = datetime.now().date().isoformat()
             sv = self.status.get("savings") or {}
             if sv.get("date") != today:
-                sv = {"date": today, "grid_cost_today_czk": 0.0, "shuttle_kwh_today": 0.0, "shuttle_loss_czk_today": 0.0}
-            gw20 = (sample.get("readings") or {}).get("gw20", {})
-            meter = as_number(gw20.get("meter_active_power_total"))
-            cost = logic.interval_cost_czk(meter, price_now, interval_s)
-            sv["grid_cost_today_czk"] = round(sv.get("grid_cost_today_czk", 0.0) + cost, 4)
-            state = logic.classify_energy_state(sample)
-            if state in ("gw10_to_gw20", "gw20_to_gw10"):
-                g10 = (sample.get("readings") or {}).get("gw10", {})
-                b10 = abs(as_number(g10.get("pbattery1")) or 0.0)
-                b20 = abs(as_number(gw20.get("pbattery1")) or 0.0)
-                skwh = logic.interval_energy_kwh(min(b10, b20), interval_s)
-                sv["shuttle_kwh_today"] = round(sv.get("shuttle_kwh_today", 0.0) + skwh, 4)
-                sv["shuttle_loss_czk_today"] = round(sv.get("shuttle_loss_czk_today", 0.0) + skwh * 0.2 * (price_now or 0.0), 4)
-            self.status["savings"] = sv
+                sv = dict(EMPTY_DAY)
+                sv["date"] = today
             st = self.status.get("stats") or {}
-            st["grid_cost_total_czk"] = round(st.get("grid_cost_total_czk", 0.0) + cost, 4)
+
+            def bump(day_key, delta, total_key=None):
+                sv[day_key] = round(sv.get(day_key, 0.0) + delta, 4)
+                if total_key:
+                    st[total_key] = round(st.get(total_key, 0.0) + delta, 4)
+
+            meter = as_number(gw20.get("meter_active_power_total"))
+            if meter is None:
+                meter = as_number(readings.get("gw10", {}).get("meter_active_power_total"))
+            if meter is not None:
+                import_w = max(0.0, -meter)
+                export_w = max(0.0, meter)
+                imp_kwh = logic.interval_energy_kwh(import_w, interval_s)
+                exp_kwh = logic.interval_energy_kwh(export_w, interval_s)
+                bump("import_kwh_today", imp_kwh)
+                bump("export_kwh_today", exp_kwh)
+                if price_buy is not None:
+                    bump("import_cost_today_czk", imp_kwh * price_buy, "import_cost_total_czk")
+                if price_sell is not None:
+                    bump("export_earn_today_czk", exp_kwh * price_sell, "export_earn_total_czk")
+                if price_now is not None:
+                    net = imp_kwh * (price_buy or 0) - exp_kwh * (price_sell or 0)
+                    bump("grid_cost_today_czk", net, "grid_cost_total_czk")
+
+            pv_w = (as_number(readings.get("gw10", {}).get("ppv")) or 0.0) + (as_number(gw20.get("ppv")) or 0.0)
+            pv_kwh = logic.interval_energy_kwh(pv_w, interval_s)
+            bump("pv_kwh_today", pv_kwh)
+            load = logic.real_house_load(readings)
+            if load is not None:
+                bump("load_kwh_today", logic.interval_energy_kwh(load, interval_s))
+            if meter is not None and price_buy is not None:
+                # PV self-consumed replaces bought energy; exported PV earns sell price.
+                exp_kwh_now = logic.interval_energy_kwh(max(0.0, meter), interval_s)
+                self_kwh = max(0.0, pv_kwh - exp_kwh_now)
+                bump("solar_saved_today_czk", self_kwh * price_buy + exp_kwh_now * (price_sell or 0.0), "solar_saved_total_czk")
+
+            skwh = logic.interval_energy_kwh(logic.shuttle_power_w(sample), interval_s)
+            if skwh:
+                bump("shuttle_kwh_today", skwh)
+                bump("shuttle_loss_czk_today", skwh * SHUTTLE_LOSS_FACTOR * (price_now or 0.0))
+
+            # coordinator counterfactual: while GW10 is held in STANDBY, the shuttle
+            # that triggered the hold is assumed avoided (conservative factor).
+            ctl = self.status.get("controller") or {}
+            trig = as_number(ctl.get("standby_trigger_w"))
+            if ctl.get("state") == "gw10_standby" and trig:
+                prev_kwh = logic.interval_energy_kwh(trig * PREVENTED_ASSUMED_FACTOR, interval_s)
+                saved = prev_kwh * (SHUTTLE_LOSS_FACTOR * (price_now or 2.5) + BATTERY_WEAR_CZK_PER_KWH)
+                bump("coordinator_prevented_kwh_today", prev_kwh, "coordinator_prevented_kwh_total")
+                bump("coordinator_saved_today_czk", saved, "coordinator_saved_total_czk")
+
+            self.status["savings"] = sv
             self.status["stats"] = st
 
     def record_write(self, result):
@@ -498,6 +576,8 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
         if not apply_enabled:
             return make_control_result("dry-run", "standby", "would_apply", reason, current_mode, GW10_BATTERY_STANDBY)
 
+        trigger_powers = [logic.shuttle_power_w(s) for s in recent_conflict]
+        trigger_w = sorted(trigger_powers)[len(trigger_powers) // 2] if trigger_powers else None
         await write_ems_mode(gw10_client, GW10_BATTERY_STANDBY)
         verified = await read_ems_mode(gw10_client)
         result = "applied" if verified == GW10_BATTERY_STANDBY else f"verify_failed:{verified}"
@@ -512,7 +592,7 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
         }
         append_action_csv(action)
         STATE.record_write(action)
-        STATE.update_controller(state="gw10_standby", gw10_ems_mode=verified, standby_since=iso_now())
+        STATE.update_controller(state="gw10_standby", gw10_ems_mode=verified, standby_since=iso_now(), standby_trigger_w=trigger_w)
         return make_control_result("apply", "standby", result, reason, current_mode, GW10_BATTERY_STANDBY)
 
     # Assist safety-stop: if GW10 is force-discharging (assist) and it is no longer
@@ -755,7 +835,9 @@ async def read_inverter(inv):
 
 
 async def connect_inverter(spec):
-    return await goodwe.connect(spec["ip"], timeout=6, retries=3)
+    # family="ET" skips protocol probing (kills the noisy es.py discovery
+    # tracebacks in the log and reconnects faster).
+    return await goodwe.connect(spec["ip"], family="ET", timeout=6, retries=3)
 
 
 async def monitor_loop(interval, apply_enabled=False, auto_restore=True):
@@ -789,8 +871,7 @@ async def monitor_loop(interval, apply_enabled=False, auto_restore=True):
             )
             STATE.add_sample(sample)
             append_csv(sample)
-            price_now = (price.snapshot() or {}).get("now") if price else None
-            STATE.accumulate(sample, interval, price_now)
+            STATE.accumulate(sample, interval, price.snapshot() if price else {})
             _cycle[0] += 1
             if _cycle[0] % 60 == 0:
                 save_persisted_stats(STATE.status.get("stats"))
@@ -800,44 +881,58 @@ async def monitor_loop(interval, apply_enabled=False, auto_restore=True):
         await asyncio.sleep(interval)
 
 
+CSV_HEADER = [
+    "time",
+    "gw10_meter_w", "gw10_battery_w", "gw10_battery_mode", "gw10_soc", "gw10_pv_w",
+    "gw20_meter_w", "gw20_battery_w", "gw20_battery_mode", "gw20_soc", "gw20_pv_w",
+    "real_load_w", "price_czk", "severity", "recommended",
+]
+CSV_MAX_ROWS = 150_000  # ~8-9 days at 5 s; on overflow rotate to samples-archive.csv
+_csv_row_count = [None]
+
+
+def _rotate_csv_if_needed():
+    """Start a fresh file when the header changed (v2 migration) or when the file
+    grows past CSV_MAX_ROWS. One archive generation is kept."""
+    if not LOG_PATH.exists():
+        _csv_row_count[0] = 0
+        return
+    try:
+        with LOG_PATH.open(encoding="utf-8", errors="replace") as fh:
+            first = fh.readline().replace("\0", "").strip()
+            if _csv_row_count[0] is None:
+                _csv_row_count[0] = sum(1 for _ in fh)
+        if first != ",".join(CSV_HEADER) or _csv_row_count[0] >= CSV_MAX_ROWS:
+            LOG_PATH.replace(DATA_DIR / "samples-archive.csv")
+            _csv_row_count[0] = 0
+    except OSError:
+        pass
+
+
 def append_csv(sample):
+    _rotate_csv_if_needed()
     exists = LOG_PATH.exists()
+    readings = sample.get("readings") or {}
+    gw10 = readings.get("gw10", {})
+    gw20 = readings.get("gw20", {})
+    decision = sample.get("decision", {})
+    price_now = (price.snapshot() or {}).get("now") if price else None
     with LOG_PATH.open("a", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         if not exists:
-            writer.writerow([
-                "time",
-                "gw10_meter_w",
-                "gw10_battery_w",
-                "gw10_battery_mode",
-                "gw10_load_w",
-                "gw10_house_w",
-                "gw20_meter_w",
-                "gw20_battery_w",
-                "gw20_battery_mode",
-                "gw20_load_w",
-                "gw20_house_w",
-                "severity",
-                "recommended",
-            ])
-        gw10 = sample["readings"].get("gw10", {})
-        gw20 = sample["readings"].get("gw20", {})
-        decision = sample.get("decision", {})
+            writer.writerow(CSV_HEADER)
         writer.writerow([
             sample["time"],
-            gw10.get("meter_active_power_total"),
-            gw10.get("pbattery1"),
-            gw10.get("battery_mode_label"),
-            gw10.get("load_ptotal"),
-            gw10.get("house_consumption"),
-            gw20.get("meter_active_power_total"),
-            gw20.get("pbattery1"),
-            gw20.get("battery_mode_label"),
-            gw20.get("load_ptotal"),
-            gw20.get("house_consumption"),
-            decision.get("severity"),
-            decision.get("recommended"),
+            gw10.get("meter_active_power_total"), gw10.get("pbattery1"), gw10.get("battery_mode_label"),
+            gw10.get("battery_soc"), gw10.get("ppv"),
+            gw20.get("meter_active_power_total"), gw20.get("pbattery1"), gw20.get("battery_mode_label"),
+            gw20.get("battery_soc"), gw20.get("ppv"),
+            logic.real_house_load(readings), price_now,
+            decision.get("severity"), decision.get("recommended"),
         ])
+        fh.flush()
+    if _csv_row_count[0] is not None:
+        _csv_row_count[0] += 1
 
 
 STATS_PATH = DATA_DIR / "stats.json"
@@ -863,7 +958,10 @@ def compute_extras(latest, prices):
         # both meters may read the same grid point; use the master (GW20) for import.
         imp = logic.grid_import_w(readings.get("gw20") or {}) or 0.0
         self_suff = logic.self_sufficiency_pct(pv, disch, imp)
-    return {"advice": advice, "self_sufficiency": self_suff, "phases": phases}
+        real_load = logic.real_house_load(readings)
+    else:
+        real_load = None
+    return {"advice": advice, "self_sufficiency": self_suff, "phases": phases, "real_load": real_load}
 
 
 def load_persisted_stats():
@@ -882,37 +980,58 @@ def save_persisted_stats(stats):
         pass
 
 
+def _read_csv_rows(path):
+    """CSV reader tolerant to NUL bytes / truncated lines from unclean shutdowns."""
+    if not path.exists():
+        return []
+    try:
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            cleaned = (line.replace("\0", "") for line in fh)
+            return [r for r in csv.DictReader(cleaned) if (r.get("time") or "").startswith("20")]
+    except Exception:
+        return []
+
+
 def read_action_rows():
     if not ACTION_LOG_PATH.exists():
         return []
     try:
-        with ACTION_LOG_PATH.open(encoding="utf-8") as fh:
-            return list(csv.DictReader(fh))
+        with ACTION_LOG_PATH.open(encoding="utf-8", errors="replace") as fh:
+            cleaned = (line.replace("\0", "") for line in fh)
+            return list(csv.DictReader(cleaned))
     except Exception:
         return []
 
 
+_history_cache = {"at": 0.0, "data": {}}
+
+
 def read_history(max_rows=17280, buckets=288):
-    """Downsampled series from samples.csv for the 24h charts."""
-    if not LOG_PATH.exists():
-        return {}
-    try:
-        with LOG_PATH.open(encoding="utf-8") as fh:
-            rows = list(csv.DictReader(fh))
-    except Exception:
-        return {}
+    """Downsampled series from samples.csv for the 24h charts (cached 60 s —
+    the FE polls this and the file lives on the Pi's SD card)."""
+    now = time.monotonic()
+    if _history_cache["data"] and now - _history_cache["at"] < 60:
+        return _history_cache["data"]
+    rows = _read_csv_rows(LOG_PATH)
     rows = logic.downsample(rows[-max_rows:], buckets)
 
     def col(name):
         return [as_number(x.get(name)) for x in rows]
 
-    return {
+    data = {
         "time": [x.get("time") for x in rows],
         "gw10_battery": col("gw10_battery_w"),
         "gw20_battery": col("gw20_battery_w"),
         "gw10_meter": col("gw10_meter_w"),
         "gw20_meter": col("gw20_meter_w"),
+        "gw10_soc": col("gw10_soc"),
+        "gw20_soc": col("gw20_soc"),
+        "real_load": col("real_load_w"),
+        "price": col("price_czk"),
     }
+    _history_cache["at"] = now
+    _history_cache["data"] = data
+    return data
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1011,12 +1130,15 @@ def main():
     args = parser.parse_args()
 
     persisted = load_persisted_stats()
-    STATE.status["stats"] = {
+    stats = {
         "restarts": persisted.get("restarts", 0) + 1,
         "first_boot": persisted.get("first_boot") or iso_now(),
         "actions_total": len(read_action_rows()),
         "grid_cost_total_czk": persisted.get("grid_cost_total_czk", 0.0),
     }
+    for key, seed in STATS_SEED.items():
+        stats[key] = persisted.get(key, seed)
+    STATE.status["stats"] = stats
     save_persisted_stats(STATE.status["stats"])
 
     if ha_bridge is not None and os.environ.get("HA_URL") and os.environ.get("HA_TOKEN"):

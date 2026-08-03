@@ -62,6 +62,55 @@ def classify_energy_state(sample, threshold_w=300):
     return "normal"
 
 
+def battery_ac_w(reading):
+    """Signed AC-side battery contribution in W: +discharging (feeds the house),
+    -charging (consumes), 0 for standby/unknown. Sign comes from the mode label,
+    never from the firmware-dependent sign of pbattery1."""
+    mode, mag = battery_dir(reading)
+    if mag is None:
+        return 0.0
+    if mode == "discharge":
+        return mag
+    if mode == "charge":
+        return -mag
+    return 0.0
+
+
+def real_house_load(readings):
+    """True house consumption for the confirmed shared-meter (series) topology.
+
+    Both meters clamp the same grid point, so per-inverter load figures double
+    count each other. The real load is the site power balance:
+        load = PV10 + PV20 + batAC10 + batAC20 + grid_import - grid_export
+    Meter convention: negative == importing. Uses GW20's meter (master),
+    falling back to GW10's. Returns None when no meter reading is available.
+    """
+    readings = readings or {}
+    g10 = readings.get("gw10") or {}
+    g20 = readings.get("gw20") or {}
+    meter = as_number(g20.get("meter_active_power_total"))
+    if meter is None:
+        meter = as_number(g10.get("meter_active_power_total"))
+    if meter is None:
+        return None
+    pv = (as_number(g10.get("ppv")) or 0.0) + (as_number(g20.get("ppv")) or 0.0)
+    load = pv + battery_ac_w(g10) + battery_ac_w(g20) - meter
+    return round(max(0.0, load), 1)
+
+
+def shuttle_power_w(sample, threshold_w=300):
+    """Power (W) currently being shuttled battery-to-battery, else 0.
+    Bounded by the smaller of the two battery powers."""
+    state = classify_energy_state(sample, threshold_w)
+    if state not in ("gw10_to_gw20", "gw20_to_gw10"):
+        return 0.0
+    g10 = (sample.get("readings") or {}).get("gw10", {})
+    g20 = (sample.get("readings") or {}).get("gw20", {})
+    b10 = abs(as_number(g10.get("pbattery1")) or 0.0)
+    b20 = abs(as_number(g20.get("pbattery1")) or 0.0)
+    return min(b10, b20)
+
+
 def gw20_charging(sample, threshold_w=300):
     """True when GW20's battery is actively charging (the condition that causes the
     secondary to shuttle). Used to avoid restoring GW10 to AUTO too early."""

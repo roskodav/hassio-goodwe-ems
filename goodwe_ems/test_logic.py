@@ -174,6 +174,67 @@ class TestAssistNeeded(unittest.TestCase):
         self.assertIsNone(logic.assist_needed(s, self.CFG))
 
 
+class TestBatteryAcW(unittest.TestCase):
+    def test_discharge_positive_regardless_of_sign(self):
+        self.assertEqual(logic.battery_ac_w({"pbattery1": -1500, "battery_mode_label": "Discharge"}), 1500.0)
+        self.assertEqual(logic.battery_ac_w({"pbattery1": 1500, "battery_mode_label": "Discharge"}), 1500.0)
+
+    def test_charge_negative(self):
+        self.assertEqual(logic.battery_ac_w({"pbattery1": 2000, "battery_mode_label": "Charge"}), -2000.0)
+
+    def test_standby_zero(self):
+        self.assertEqual(logic.battery_ac_w({"pbattery1": 5, "battery_mode_label": "Standby"}), 0.0)
+        self.assertEqual(logic.battery_ac_w({}), 0.0)
+
+
+class TestRealHouseLoad(unittest.TestCase):
+    def test_confirmed_snapshot_balance(self):
+        # real snapshot 2026-08-03: PV 1322+5853, GW10 charging 5497, GW20 standby,
+        # shared meter ~ +20 (small export) -> real load ≈ 1.66 kW
+        r = {
+            "gw10": {"ppv": 1322, "pbattery1": -5497, "battery_mode_label": "Charge",
+                     "meter_active_power_total": 7},
+            "gw20": {"ppv": 5853, "pbattery1": 0, "battery_mode_label": "Standby",
+                     "meter_active_power_total": 20},
+        }
+        load = logic.real_house_load(r)
+        self.assertAlmostEqual(load, 1322 + 5853 - 5497 - 20, places=0)
+
+    def test_import_adds_to_load(self):
+        # importing 2 kW (meter -2000), no PV, batteries idle -> load = 2 kW
+        r = {"gw10": {"meter_active_power_total": -1990}, "gw20": {"meter_active_power_total": -2000}}
+        self.assertAlmostEqual(logic.real_house_load(r), 2000.0, delta=1)
+
+    def test_uses_gw10_meter_as_fallback(self):
+        r = {"gw10": {"meter_active_power_total": -500}, "gw20": {}}
+        self.assertAlmostEqual(logic.real_house_load(r), 500.0, delta=1)
+
+    def test_none_without_meter(self):
+        self.assertIsNone(logic.real_house_load({"gw10": {}, "gw20": {}}))
+        self.assertIsNone(logic.real_house_load({}))
+
+    def test_clamped_at_zero(self):
+        # nonsense combination should not go negative
+        r = {"gw20": {"ppv": 0, "meter_active_power_total": 3000}}
+        self.assertEqual(logic.real_house_load(r), 0.0)
+
+
+class TestShuttlePower(unittest.TestCase):
+    def test_shuttle_min_of_both(self):
+        s = sample(
+            gw10={"pbattery1": -4000, "battery_mode_label": "Discharge"},
+            gw20={"pbattery1": 3000, "battery_mode_label": "Charge"},
+        )
+        self.assertEqual(logic.shuttle_power_w(s), 3000.0)
+
+    def test_zero_when_normal(self):
+        s = sample(
+            gw10={"pbattery1": -100, "battery_mode_label": "Discharge"},
+            gw20={"pbattery1": 3000, "battery_mode_label": "Charge"},
+        )
+        self.assertEqual(logic.shuttle_power_w(s), 0.0)
+
+
 class TestGw20Charging(unittest.TestCase):
     def test_charging(self):
         s = sample(gw20={"pbattery1": 4000, "battery_mode_label": "Charge"})

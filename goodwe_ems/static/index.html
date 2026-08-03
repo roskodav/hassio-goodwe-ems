@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GoodWe EMS Koordinátor</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%98%80%EF%B8%8F%3C/text%3E%3C/svg%3E">
   <style>
     :root {
       --bg: #f4f1ea;
@@ -167,16 +168,36 @@
       <section class="panel wide">
         <div class="tiles">
           <div class="tile">
+            <div><div class="label">Skutečná spotřeba domu</div><div class="big" id="realLoad">—</div>
+            <div class="small">z bilance PV + baterie + síť (sdílený měřák — střídače samy hlásí zkreslené hodnoty)</div></div>
+          </div>
+          <div class="tile">
             <div class="gauge" id="gauge"><b id="gaugeVal">—</b></div>
             <div><div class="label">Soběstačnost teď</div><div class="small">podíl krytý z PV + baterie</div></div>
+          </div>
+          <div class="tile">
+            <div><div class="label">🛡 Koordinátor ušetřil</div><div class="big" id="coordSaved">—</div>
+            <div class="small" id="coordSavedDetail">vs. kdyby tu nebyl (zabráněné přelévání + opotřebení)</div></div>
           </div>
           <div class="tile">
             <div><div class="label" id="costLabel">Dnes za síť</div><div class="big" id="costToday">—</div><div class="small" id="shuttleInfo">za spotové ceny</div></div>
           </div>
           <div class="tile">
+            <div><div class="label">☀️ Soláry ušetřily</div><div class="big" id="solarSaved">—</div>
+            <div class="small" id="solarSavedDetail">vlastní spotřeba + výkup</div></div>
+          </div>
+          <div class="tile">
             <div><div class="label">Doporučení dle ceny</div><div class="small" id="adviceText" style="margin-top:4px">—</div>
             <div class="small" style="margin-top:6px">zásahů: <b id="statActions">—</b> · restartů: <b id="statRestarts">—</b></div></div>
           </div>
+        </div>
+      </section>
+
+      <!-- DNEŠNÍ ENERGETICKÁ BILANCE -->
+      <section class="panel wide">
+        <h2>Dnešní bilance <span class="small" style="font-weight:400" id="balanceDate"></span></h2>
+        <div class="phasebars" style="grid-template-columns:130px 1fr 150px" id="balanceBox">
+          <p class="small">Čekám na data…</p>
         </div>
       </section>
 
@@ -289,7 +310,7 @@
           <rect class="node-box" x="410" y="380" width="140" height="114" rx="14"></rect>
           <text class="node-cap" x="480" y="406" text-anchor="middle">DŮM</text>
           <text class="node-val" id="n-house" x="480" y="432" text-anchor="middle">— W</text>
-          <text class="node-sub" id="n-house2" x="480" y="462" text-anchor="middle">spotřeba objektu</text>
+          <text class="node-sub" id="n-house2" x="480" y="462" text-anchor="middle">skutečná spotřeba (bilance)</text>
 
           <!-- BATERIE GW10 -->
           <rect class="node-box" x="570" y="380" width="140" height="114" rx="14"></rect>
@@ -446,13 +467,13 @@
           <div class="metrics">
             <div class="metric"><div class="label">Elektroměr</div><div class="value">${fmt(reading.meter_active_power_total)}</div></div>
             <div class="metric"><div class="label">Baterie</div><div class="value">${fmt(Math.abs(Number(reading.pbattery1) || 0))}</div><div class="small">${modeCz(reading.battery_mode_label)}</div></div>
-            <div class="metric"><div class="label">Spotřeba</div><div class="value">${fmt(reading.load_ptotal)}</div></div>
+            <div class="metric"><div class="label">PV výkon</div><div class="value">${fmt(reading.ppv)}</div></div>
             <div class="metric"><div class="label">SOC baterie</div><div class="value">${pct(reading.battery_soc)}</div></div>
           </div>`}
         </article>`;
     }
 
-    function updateFlow(g10, g20, state) {
+    function updateFlow(g10, g20, state, realLoad) {
       const num = (o, k) => { const v = Number(o?.[k]); return Number.isFinite(v) ? v : null; };
       const pv10 = num(g10, "ppv") ?? num(g10, "ppv_total");
       const pv20 = num(g20, "ppv") ?? num(g20, "ppv_total");
@@ -467,7 +488,7 @@
       setText("n-gw10-mode", "Baterie: " + modeCz(g10.battery_mode_label));
       setText("n-gw20-p", "měřák " + fmt(meter20));
       setText("n-gw10-p", "měřák " + fmt(meter10));
-      setText("n-house", fmt(load20));
+      setText("n-house", realLoad != null ? fmt(realLoad) : fmt(load20));
       setText("n-bat20", batText(m20, bat20));
       setText("n-bat10", batText(m10, bat10));
       setText("n-soc20", "SOC " + pct(g20.battery_soc));
@@ -481,9 +502,10 @@
       setText("l-pv20", pv20On ? "PV " + fmt(pv20) : "PV");
       setText("l-pv10", pv10On ? "PV " + fmt(pv10) : "PV");
 
-      const houseOn = load20 != null && load20 > 50;
+      const houseW = realLoad != null ? realLoad : load20;
+      const houseOn = houseW != null && houseW > 50;
       setEdge("e-house", houseOn, "blue", false, "end");
-      setText("l-house", houseOn ? "spotřeba " + fmt(load20) : "spotřeba");
+      setText("l-house", houseOn ? "spotřeba " + fmt(houseW) : "spotřeba");
 
       const gridOn = meter20 != null && Math.abs(meter20) > 50;
       setEdge("e-grid", gridOn, "blue", false, "end");
@@ -611,12 +633,26 @@
     }
     function cvar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim() || "#000"; }
 
+    const czk = (v, dec = 1) => (v != null && Number.isFinite(Number(v))) ? `${Number(v).toFixed(dec)} Kč` : "—";
+    const kwh = v => (v != null && Number.isFinite(Number(v))) ? `${Number(v).toFixed(1)} kWh` : "—";
+
     function renderStats(data) {
       const ss = data.self_sufficiency;
       const g = document.getElementById("gauge");
       g.style.setProperty("--p", ss != null ? ss : 0);
       document.getElementById("gaugeVal").textContent = ss != null ? Math.round(ss) + "%" : "—";
       const sv = data.savings || {};
+      const st = data.stats || {};
+
+      document.getElementById("realLoad").textContent = data.real_load != null ? fmt(data.real_load) : "—";
+
+      // Koordinátor: hlavní metrika = celkem, detail = dnes + zabráněná energie
+      document.getElementById("coordSaved").textContent = czk(st.coordinator_saved_total_czk, 0);
+      const prevT = Number(st.coordinator_prevented_kwh_total);
+      document.getElementById("coordSavedDetail").textContent =
+        `celkem · zabráněno ${Number.isFinite(prevT) ? prevT.toFixed(1) : "—"} kWh přelévání` +
+        (Number(sv.coordinator_saved_today_czk) > 0.05 ? ` · dnes +${Number(sv.coordinator_saved_today_czk).toFixed(1)} Kč` : "");
+
       const cost = sv.grid_cost_today_czk;
       if (cost != null && Number.isFinite(Number(cost))) {
         document.getElementById("costToday").textContent = `${Math.abs(cost).toFixed(1)} Kč`;
@@ -626,13 +662,36 @@
       }
       const sh = Number(sv.shuttle_kwh_today);
       const si = document.getElementById("shuttleInfo");
+      const totalPaid = czk(st.import_cost_total_czk, 0);
       if (si) si.textContent = (Number.isFinite(sh) && sh > 0.05)
         ? `⚠ přelito ${sh.toFixed(1)} kWh (~${(Number(sv.shuttle_loss_czk_today) || 0).toFixed(1)} Kč ztráta)`
-        : "za spotové ceny";
+        : `zaplaceno celkem ${totalPaid} · vyděláno ${czk(st.export_earn_total_czk, 0)}`;
+
+      document.getElementById("solarSaved").textContent = czk(sv.solar_saved_today_czk, 0);
+      document.getElementById("solarSavedDetail").textContent =
+        `dnes · celkem ${czk(st.solar_saved_total_czk, 0)} (od 3. 8.)`;
+
       document.getElementById("adviceText").textContent = (data.advice || {}).text || "—";
-      const st = data.stats || {};
       document.getElementById("statActions").textContent = st.actions_total ?? "—";
       document.getElementById("statRestarts").textContent = st.restarts ?? "—";
+
+      // dnešní bilance
+      const bd = document.getElementById("balanceDate");
+      if (bd) bd.textContent = sv.date ? `· ${sv.date}` : "";
+      const box = document.getElementById("balanceBox");
+      if (box) {
+        const rows = [
+          ["☀️ Výroba PV", sv.pv_kwh_today, "var(--amber)", kwh(sv.pv_kwh_today)],
+          ["🏠 Spotřeba domu", sv.load_kwh_today, "var(--blue)", kwh(sv.load_kwh_today)],
+          ["⬇ Nákup ze sítě", sv.import_kwh_today, "var(--red)", `${kwh(sv.import_kwh_today)} · ${czk(sv.import_cost_today_czk)}`],
+          ["⬆ Prodej do sítě", sv.export_kwh_today, "var(--green)", `${kwh(sv.export_kwh_today)} · ${czk(sv.export_earn_today_czk)}`],
+        ];
+        const maxV = Math.max(...rows.map(r => Number(r[1]) || 0), 0.1);
+        box.innerHTML = rows.map(([name, val, col, txt]) => {
+          const w = Math.min(100, (Number(val) || 0) / maxV * 100);
+          return `<div class="pl" style="width:auto">${name}</div><div class="track2"><div class="fill2" style="left:0;width:${w}%;background:${col}"></div></div><div class="pv">${txt}</div>`;
+        }).join("");
+      }
     }
 
     function renderPhases(data) {
@@ -729,7 +788,7 @@
       const g10 = latest?.readings?.gw10 || {};
       const g20 = latest?.readings?.gw20 || {};
       const state = latest ? classify(latest) : "unknown";
-      updateFlow(g10, g20, state);
+      updateFlow(g10, g20, state, data.real_load);
 
       const banner = document.getElementById("banner");
       const ctl = (data.control_plan && data.control_plan.controller) || {};
