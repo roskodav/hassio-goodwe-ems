@@ -176,6 +176,10 @@
             <div><div class="label">Soběstačnost teď</div><div class="small">podíl krytý z PV + baterie</div></div>
           </div>
           <div class="tile">
+            <div><div class="label">💰 Bilance sítě celkem</div><div class="big" id="gridTotal">—</div>
+            <div class="small" id="gridTotalDetail">nákup − prodej za spotové ceny (od 5. 7.)</div></div>
+          </div>
+          <div class="tile">
             <div><div class="label">🛡 Koordinátor ušetřil</div><div class="big" id="coordSaved">—</div>
             <div class="small" id="coordSavedDetail">vs. kdyby tu nebyl (zabráněné přelévání + opotřebení)</div></div>
           </div>
@@ -646,11 +650,23 @@
 
       document.getElementById("realLoad").textContent = data.real_load != null ? fmt(data.real_load) : "—";
 
-      // Koordinátor: hlavní metrika = celkem, detail = dnes + zabráněná energie
-      document.getElementById("coordSaved").textContent = czk(st.coordinator_saved_total_czk, 0);
+      // Bilance sítě celkem — reálné velké číslo (běží od 5. 7.)
+      const gt = Number(st.grid_cost_total_czk);
+      const gtEl = document.getElementById("gridTotal");
+      if (gtEl && Number.isFinite(gt)) {
+        gtEl.textContent = (gt < 0 ? "+" : "−") + Math.abs(gt).toFixed(0) + " Kč";
+        gtEl.style.color = gt < 0 ? "var(--green)" : "var(--red)";
+        document.getElementById("gridTotalDetail").textContent =
+          (gt < 0 ? "vyděláno na síti" : "zaplaceno za síť") + " za spotové ceny (od 5. 7.)";
+      }
+
+      // Koordinátor: rozpětí konzervativní–horní odhad (horní = bez 0,6 diskontu)
+      const cs = Number(st.coordinator_saved_total_czk);
       const prevT = Number(st.coordinator_prevented_kwh_total);
+      document.getElementById("coordSaved").textContent =
+        Number.isFinite(cs) ? `${cs.toFixed(0)}–${(cs / 0.6).toFixed(0)} Kč` : "—";
       document.getElementById("coordSavedDetail").textContent =
-        `celkem · zabráněno ${Number.isFinite(prevT) ? prevT.toFixed(1) : "—"} kWh přelévání` +
+        `konzervativní–horní odhad · zabráněno ${Number.isFinite(prevT) ? prevT.toFixed(1) : "—"}+ kWh přelévání` +
         (Number(sv.coordinator_saved_today_czk) > 0.05 ? ` · dnes +${Number(sv.coordinator_saved_today_czk).toFixed(1)} Kč` : "");
 
       const cost = sv.grid_cost_today_czk;
