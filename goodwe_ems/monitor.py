@@ -136,7 +136,7 @@ EMPTY_DAY = {
 # (conservative: standby windows only). Full counterfactual — chained conflict
 # periods (66x measured direction ping-pong, no capacity cap): ~77 kWh transfer,
 # ~19 kWh lost ≈ 163 CZK/month incl. wear. Upper accrues at the measured ratio.
-COUNTERFACTUAL_RATIO = _envf("EMS_CF_RATIO", 3.8)  # full-counterfactual / conservative (163/43 from data)
+COUNTERFACTUAL_RATIO = _envf("EMS_CF_RATIO", 5.7)  # full-counterfactual / conservative (163/43 from data)
 
 # --- Spot arbitrage planner (GW10 only; GW20 stays untouched) ---
 # "sim" computes the plan + simulated earnings without writing anything;
@@ -150,7 +150,7 @@ SPOT_SIM_POWER_W = _envf("EMS_SPOT_SIM_POWER_W", 3000)  # assumed arbitrage powe
 STATS_SEED = {
     "coordinator_prevented_kwh_total": 20.5,
     "coordinator_saved_total_czk": 43.0,
-    "coordinator_saved_upper_total_czk": 163.0,
+    "coordinator_saved_upper_total_czk": 246.0,
     "import_cost_total_czk": 0.0,
     "export_earn_total_czk": 0.0,
     "solar_saved_total_czk": 0.0,
