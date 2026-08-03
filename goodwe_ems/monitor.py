@@ -147,10 +147,13 @@ SPOT_EXP_HOURS = int(_envf("EMS_SPOT_EXP_HOURS", 4))
 SPOT_SOC_FLOOR = _envf("EMS_SPOT_SOC_FLOOR", 30)
 SPOT_SOC_CEILING = _envf("EMS_SPOT_SOC_CEILING", 95)
 SPOT_SIM_POWER_W = _envf("EMS_SPOT_SIM_POWER_W", 3000)  # assumed arbitrage power in sim
+# Upper seed: owner attests pre-fix shuttling ran ~3x the measured best estimate
+# (163 Kč/mo × 3 ≈ 490). Measured ceiling alone was 246 — the FE labels the upper
+# figure explicitly as "3× dle pozorování majitele", not as a measurement.
 STATS_SEED = {
     "coordinator_prevented_kwh_total": 20.5,
     "coordinator_saved_total_czk": 43.0,
-    "coordinator_saved_upper_total_czk": 246.0,
+    "coordinator_saved_upper_total_czk": 490.0,
     "import_cost_total_czk": 0.0,
     "export_earn_total_czk": 0.0,
     "solar_saved_total_czk": 0.0,

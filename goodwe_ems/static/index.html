@@ -702,7 +702,7 @@
       document.getElementById("coordSaved").textContent =
         Number.isFinite(cs) ? `${cs.toFixed(0)}–${(Number.isFinite(csUp) ? csUp : cs / 0.6).toFixed(0)} Kč` : "—";
       document.getElementById("coordSavedDetail").textContent =
-        `konzervativně až plný odhad „bez koordinátoru" · zabráněno ${Number.isFinite(prevT) ? prevT.toFixed(1) : "—"}+ kWh přelévání` +
+        `změřené minimum až 3× odhad dle pozorování před opravou · zabráněno ${Number.isFinite(prevT) ? prevT.toFixed(1) : "—"}+ kWh přelévání` +
         (Number(sv.coordinator_saved_today_czk) > 0.05 ? ` · dnes +${Number(sv.coordinator_saved_today_czk).toFixed(1)} Kč` : "");
 
       // hero pruh: „Koordinátor vám ušetřil …“ + roční projekce
@@ -713,7 +713,7 @@
         const annual = (days && Number.isFinite(csUp)) ? Math.round(csUp / days * 365) : null;
         hero.innerHTML = `🛡 Koordinátor vám ušetřil <b>${cs.toFixed(0)}–${upTxt} Kč</b>` +
           (annual ? ` <small>(≈ ${annual.toLocaleString("cs-CZ")} Kč/rok)</small>` : "") +
-          ` <small>— zabránil ${Number.isFinite(prevT) ? prevT.toFixed(1) : "?"} kWh zbytečného přelévání mezi bateriemi a chrání jejich životnost</small>`;
+          ` <small>— zabránil ${Number.isFinite(prevT) ? prevT.toFixed(1) : "?"} kWh+ zbytečného přelévání a chrání životnost baterií · horní mez = 3× dle pozorování před opravou</small>`;
         hero.style.display = "flex";
       }
 
