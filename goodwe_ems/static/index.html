@@ -87,6 +87,13 @@
     .banner { display: none; align-items: center; gap: 10px; margin: 0 0 14px; padding: 12px 16px; border-radius: 10px; font-weight: 650; border: 1px solid rgba(179,49,45,.4); background: rgba(179,49,45,.10); color: var(--red); }
     .banner.show { display: flex; }
     .banner.ok { border-color: rgba(20,122,92,.35); background: rgba(20,122,92,.10); color: var(--green); display: flex; }
+    .hero-saved {
+      display: none; align-items: center; gap: 12px; margin: 0 0 14px;
+      padding: 14px 18px; border-radius: 10px; font-size: 17px; font-weight: 700;
+      border: 1px solid rgba(20,122,92,.4); background: linear-gradient(90deg, rgba(20,122,92,.14), rgba(20,122,92,.05));
+      color: var(--green); box-shadow: var(--shadow);
+    }
+    .hero-saved small { font-weight: 500; color: var(--muted); font-size: 13px; }
 
     /* --- infografika / tok energie --- */
     .flowwrap { margin-top: 2px; }
@@ -144,6 +151,7 @@
       <div class="status-pill"><span class="dot" id="statusDot"></span><span id="statusText">Připojuji…</span></div>
     </header>
 
+    <div class="hero-saved" id="heroSaved"></div>
     <div class="banner" id="banner"></div>
 
     <section class="grid">
@@ -669,6 +677,18 @@
       document.getElementById("coordSavedDetail").textContent =
         `konzervativně až plný odhad „bez koordinátoru" · zabráněno ${Number.isFinite(prevT) ? prevT.toFixed(1) : "—"}+ kWh přelévání` +
         (Number(sv.coordinator_saved_today_czk) > 0.05 ? ` · dnes +${Number(sv.coordinator_saved_today_czk).toFixed(1)} Kč` : "");
+
+      // hero pruh: „Koordinátor vám ušetřil …“ + roční projekce
+      const hero = document.getElementById("heroSaved");
+      if (hero && Number.isFinite(cs)) {
+        const upTxt = Number.isFinite(csUp) ? csUp.toFixed(0) : (cs / 0.6).toFixed(0);
+        const days = st.first_boot ? Math.max(1, (Date.now() - Date.parse(st.first_boot)) / 86400000) : null;
+        const annual = (days && Number.isFinite(csUp)) ? Math.round(csUp / days * 365) : null;
+        hero.innerHTML = `🛡 Koordinátor vám ušetřil <b>${cs.toFixed(0)}–${upTxt} Kč</b>` +
+          (annual ? ` <small>(≈ ${annual.toLocaleString("cs-CZ")} Kč/rok)</small>` : "") +
+          ` <small>— zabránil ${Number.isFinite(prevT) ? prevT.toFixed(1) : "?"} kWh zbytečného přelévání mezi bateriemi a chrání jejich životnost</small>`;
+        hero.style.display = "flex";
+      }
 
       const cost = sv.grid_cost_today_czk;
       if (cost != null && Number.isFinite(Number(cost))) {
