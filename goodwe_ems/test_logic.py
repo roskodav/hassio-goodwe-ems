@@ -235,6 +235,50 @@ class TestShuttlePower(unittest.TestCase):
         self.assertEqual(logic.shuttle_power_w(s), 0.0)
 
 
+class TestChargeStarvation(unittest.TestCase):
+    CFG = {"gw10_charge_w": 1000, "gw20_soc_max": 60, "soc_gap": 15}
+    RCFG = {"gap_release": 5, "gw20_soc_done": 60, "import_release_w": 200}
+
+    def _s(self, s10, s20, b10=-5000, m10="Charge", b20=0, m20="Standby", meter=100):
+        return sample(
+            gw10={"battery_soc": s10, "pbattery1": b10, "battery_mode_label": m10},
+            gw20={"battery_soc": s20, "pbattery1": b20, "battery_mode_label": m20,
+                  "meter_active_power_total": meter},
+        )
+
+    def test_detects_live_case(self):
+        # the observed case: GW10 53% charging 5.9kW, GW20 20% standby
+        self.assertTrue(logic.charge_starvation(self._s(53, 20), self.CFG))
+
+    def test_not_when_gw20_also_charging(self):
+        self.assertFalse(logic.charge_starvation(self._s(53, 20, b20=2000, m20="Charge"), self.CFG))
+
+    def test_not_when_gap_small(self):
+        self.assertFalse(logic.charge_starvation(self._s(30, 20), self.CFG))
+
+    def test_not_when_gw20_high(self):
+        self.assertFalse(logic.charge_starvation(self._s(90, 70), self.CFG))
+
+    def test_not_when_gw10_light_charge(self):
+        self.assertFalse(logic.charge_starvation(self._s(53, 20, b10=-500), self.CFG))
+
+    def test_none_when_missing(self):
+        s = sample(gw10={"pbattery1": -5000, "battery_mode_label": "Charge"}, gw20={})
+        self.assertIsNone(logic.charge_starvation(s, self.CFG))
+
+    def test_release_on_gap_closed(self):
+        self.assertTrue(logic.charge_pause_should_release(self._s(24, 20), self.RCFG))
+
+    def test_release_on_gw20_done(self):
+        self.assertTrue(logic.charge_pause_should_release(self._s(80, 62), self.RCFG))
+
+    def test_release_on_import(self):
+        self.assertTrue(logic.charge_pause_should_release(self._s(53, 20, meter=-500), self.RCFG))
+
+    def test_no_release_while_starving(self):
+        self.assertFalse(logic.charge_pause_should_release(self._s(53, 20, meter=100), self.RCFG))
+
+
 class TestGw20Charging(unittest.TestCase):
     def test_charging(self):
         s = sample(gw20={"pbattery1": 4000, "battery_mode_label": "Charge"})

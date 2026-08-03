@@ -108,6 +108,21 @@ ASSIST_IMPORT_MIN = _envf("EMS_ASSIST_IMPORT_MIN", 400)        # site importing 
 ASSIST_IMPORT_STOP = _envf("EMS_ASSIST_IMPORT_STOP", 150)      # safety-stop below this import
 ASSIST_GW20_SOC_RECOVER = _envf("EMS_ASSIST_GW20_RECOVER", 45)  # stop once GW20 recovers to this
 
+# --- charge-balance: stop GW10 hoarding PV while GW20 (Delta Green's) starves ---
+CHARGE_BALANCE_ENABLED = str(os.environ.get("EMS_CHARGE_BALANCE", "true")).strip().lower() in {"1", "true", "yes", "on"}
+STARVE_CFG = {
+    "gw10_charge_w": _envf("EMS_STARVE_GW10_CHARGE_W", 1000),
+    "gw20_soc_max": _envf("EMS_STARVE_GW20_SOC", 60),
+    "soc_gap": _envf("EMS_STARVE_GAP", 15),
+}
+STARVE_RELEASE_CFG = {
+    "gap_release": _envf("EMS_STARVE_GAP_RELEASE", 5),
+    "gw20_soc_done": _envf("EMS_STARVE_GW20_DONE", 60),
+    "import_release_w": _envf("EMS_STARVE_IMPORT_RELEASE", 200),
+}
+MAX_CHARGE_PAUSE_SECONDS = 2 * 60 * 60
+GW20_EMS_CHECK_EVERY = 12  # read GW20 ems_mode every Nth cycle (~1/min) to detect DG dispatch
+
 SHUTTLE_LOSS_FACTOR = 0.25          # AC round-trip loss of battery-to-battery transfer
 BATTERY_WEAR_CZK_PER_KWH = 1.5      # LFP cycle wear cost per shuttled kWh
 PREVENTED_ASSUMED_FACTOR = 0.6      # conservative share of trigger power assumed avoided
@@ -200,7 +215,10 @@ class MonitorState:
             "controller": {
                 "state": "monitoring",
                 "gw10_ems_mode": None,
+                "gw20_ems_mode": None,
+                "dg_dispatch": False,
                 "standby_since": None,
+                "charge_pause_since": None,
                 "last_write_at": None,
                 "last_write_result": None,
             },
@@ -591,6 +609,18 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
             f"Could not read GW10 ems_mode: {type(exc).__name__}: {exc}",
         )
 
+    # Delta Green dispatch detection: read GW20's ems_mode ~once a minute
+    # (_cycle advances in monitor_loop). Non-AUTO means their box is actively
+    # commanding GW20 -> assist & charge-balance back off; anti-shuttle stays.
+    gw20_client = clients.get("gw20")
+    if gw20_client and _cycle[0] % GW20_EMS_CHECK_EVERY == 0:
+        try:
+            gw20_mode = await read_ems_mode(gw20_client)
+            STATE.update_controller(gw20_ems_mode=gw20_mode, dg_dispatch=gw20_mode not in (None, GW10_AUTO))
+        except Exception:
+            pass
+    dg_active = bool(STATE.controller_snapshot().get("dg_dispatch"))
+
     cooldown = seconds_since_iso(controller.get("last_write_at"))
     in_cooldown = cooldown is not None and cooldown < WRITE_COOLDOWN_SECONDS
     shuttle_count = conflict_counts.get("gw10_to_gw20", 0) + conflict_counts.get("gw20_to_gw10", 0)
@@ -616,6 +646,11 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
     assist_cleared = (
         len(assist_clear_window) >= CLEAR_RESTORE_SAMPLES
         and all(classify_assist(s) is False for s in assist_clear_window)
+    )
+    stable_starvation = (
+        CHARGE_BALANCE_ENABLED
+        and len(assist_window) >= CONFLICT_APPLY_SAMPLES
+        and all(logic.charge_starvation(s, STARVE_CFG) is True for s in assist_window)
     )
 
     if current_mode == GW10_BATTERY_STANDBY and not controller.get("standby_since"):
@@ -671,7 +706,7 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
 
     # Assist: GW20 low + discharging near max while GW10 is much fuller and the site
     # imports -> GW10 shares the load (DISCHARGE_PV). Shuttle (handled above) wins.
-    if stable_assist and current_mode != GW10_BATTERY_STANDBY:
+    if stable_assist and not dg_active and current_mode != GW10_BATTERY_STANDBY:
         reason = "GW20 low SOC and discharging near max while GW10 is much fuller and the site imports -> GW10 assists (DISCHARGE_PV)."
         if current_mode == GW10_DISCHARGE:
             STATE.update_controller(state="gw10_assist")
@@ -691,6 +726,44 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
         STATE.record_write(action)
         STATE.update_controller(state="gw10_assist", gw10_ems_mode=verified, standby_since=None)
         return make_control_result("apply", "assist", result, reason, current_mode, GW10_DISCHARGE)
+
+    # Charge-pause management: GW10 is held so the PV surplus feeds GW20 instead.
+    if current_mode == GW10_BATTERY_STANDBY and controller.get("state") == "gw10_charge_pause":
+        pause_age = seconds_since_iso(controller.get("charge_pause_since"))
+        should_release = (
+            latest_valid is None
+            or logic.charge_pause_should_release(latest_valid, STARVE_RELEASE_CFG)
+            or (pause_age is not None and pause_age >= MAX_CHARGE_PAUSE_SECONDS)
+        )
+        if not should_release:
+            return make_control_result("apply" if apply_enabled else "dry-run", "charge_pause", "holding", "GW10 held so the PV surplus charges GW20 (was starving).", current_mode, None)
+        reason = "Charge-balance release: GW20 caught up / filled / surplus gone -> GW10 back to AUTO."
+        if not apply_enabled:
+            return make_control_result("dry-run", "restore_auto", "would_apply", reason, current_mode, GW10_AUTO)
+        await write_ems_mode(gw10_client, GW10_AUTO)
+        verified = await read_ems_mode(gw10_client)
+        result = "applied" if verified == GW10_AUTO else f"verify_failed:{verified}"
+        action = {"time": iso_now(), "operation": "charge_balance_release", "target": "10.0.1.10",
+                  "from_mode": current_mode, "to_mode": GW10_AUTO, "result": result, "reason": reason}
+        append_action_csv(action)
+        STATE.record_write(action)
+        STATE.update_controller(state="monitoring", gw10_ems_mode=verified, charge_pause_since=None)
+        return make_control_result("apply", "restore_auto", result, reason, current_mode, GW10_AUTO)
+
+    # Charge-balance trigger: pause GW10's charging so GW20 gets the surplus.
+    if stable_starvation and not dg_active and current_mode == GW10_AUTO and not in_cooldown:
+        reason = "GW10 hoards PV charge while GW20 starves at much lower SOC -> pause GW10 (charge-balance) so the surplus charges GW20."
+        if not apply_enabled:
+            return make_control_result("dry-run", "charge_pause", "would_apply", reason, current_mode, GW10_BATTERY_STANDBY)
+        await write_ems_mode(gw10_client, GW10_BATTERY_STANDBY)
+        verified = await read_ems_mode(gw10_client)
+        result = "applied" if verified == GW10_BATTERY_STANDBY else f"verify_failed:{verified}"
+        action = {"time": iso_now(), "operation": "charge_balance_pause", "target": "10.0.1.10",
+                  "from_mode": current_mode, "to_mode": GW10_BATTERY_STANDBY, "result": result, "reason": reason}
+        append_action_csv(action)
+        STATE.record_write(action)
+        STATE.update_controller(state="gw10_charge_pause", gw10_ems_mode=verified, charge_pause_since=iso_now(), standby_since=None)
+        return make_control_result("apply", "charge_pause", result, reason, current_mode, GW10_BATTERY_STANDBY)
 
     if current_mode == GW10_BATTERY_STANDBY and auto_restore:
         standby_age = seconds_since_iso(controller.get("standby_since"))

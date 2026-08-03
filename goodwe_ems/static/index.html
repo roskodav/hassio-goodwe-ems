@@ -364,6 +364,7 @@
         <p class="small">Režim: <b id="ctlMode">—</b></p>
         <p class="small">Stav GW10: <b id="ctlState">—</b></p>
         <p class="small">EMS mód GW10: <b id="ctlEms">—</b></p>
+        <p class="small">Delta Green dispatch: <b id="ctlDg">—</b></p>
         <p class="small">Poslední akce:</p>
         <p id="ctlLast" style="margin:4px 0">—</p>
         <p class="small">Reálné zápisy: <b id="ctlWrites">0</b></p>
@@ -865,6 +866,12 @@
       } else if (ctl.state === "gw10_assist") {
         banner.className = "banner ok";
         banner.textContent = "GW20 je nízko a maká na doraz → GW10 pomáhá vybíjením (sdílení zátěže). Vrátí se do AUTO, až GW20 nabere nebo přestane import.";
+      } else if (ctl.state === "gw10_charge_pause") {
+        banner.className = "banner ok";
+        banner.textContent = "⚖️ GW10 hltal PV přebytky a hlavní baterie GW20 hladověla → GW10 pauznut, přebytek teď nabíjí GW20. Uvolní se, až se GW20 dorovná.";
+      } else if (ctl.dg_dispatch) {
+        banner.className = "banner ok";
+        banner.textContent = "🌱 Delta Green aktivně řídí GW20 — naše asistence automaticky ustupují, anti-přelévání zůstává.";
       } else {
         banner.className = "banner";
       }
@@ -897,10 +904,15 @@
         : ctl.gw10_ems_mode === 8 ? "STANDBY (8)"
         : ctl.gw10_ems_mode === 3 ? "DISCHARGE (3)"
         : (ctl.gw10_ems_mode ?? "—");
-      const stateCz = { monitoring: "sleduji", gw10_standby: "GW10 ve STANDBY", gw10_assist: "GW10 pomáhá (vybíjí)" };
+      const stateCz = { monitoring: "sleduji", gw10_standby: "GW10 ve STANDBY", gw10_assist: "GW10 pomáhá (vybíjí)", gw10_charge_pause: "GW10 pauznut, nabíjí se GW20" };
       document.getElementById("ctlMode").textContent = apply ? "OSTRÝ (zapisuje)" : "SIMULACE";
       document.getElementById("ctlState").textContent = stateCz[ctl.state] || ctl.state || "—";
       document.getElementById("ctlEms").textContent = emsTxt;
+      const dgEl = document.getElementById("ctlDg");
+      if (dgEl) {
+        dgEl.textContent = ctl.dg_dispatch ? "🌱 AKTIVNÍ (řídí GW20)" : "neaktivní (čeká na aktivaci u DG)";
+        dgEl.style.color = ctl.dg_dispatch ? "var(--green)" : "var(--muted)";
+      }
       document.getElementById("ctlWrites").textContent = data.status.write_count ?? 0;
       const lw = ctl.last_write_result;
       document.getElementById("ctlLast").textContent = lw

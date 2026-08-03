@@ -111,6 +111,46 @@ def shuttle_power_w(sample, threshold_w=300):
     return min(b10, b20)
 
 
+def charge_starvation(sample, cfg):
+    """True when GW10 hoards the PV surplus (charging hard) while GW20 — the
+    master that Delta Green should dispatch — sits idle at much lower SOC.
+    Pausing GW10 lets the shared-meter surplus flow into GW20 instead."""
+    g10 = (sample.get("readings") or {}).get("gw10", {})
+    g20 = (sample.get("readings") or {}).get("gw20", {})
+    s10 = as_number(g10.get("battery_soc"))
+    s20 = as_number(g20.get("battery_soc"))
+    m10, b10 = battery_dir(g10)
+    m20, b20 = battery_dir(g20)
+    if None in (s10, s20) or b10 is None:
+        return None
+    gw10_charging_hard = m10 == "charge" and b10 >= cfg["gw10_charge_w"]
+    gw20_idle = m20 != "charge" or (b20 or 0) < 300
+    return bool(
+        gw10_charging_hard and gw20_idle
+        and s20 <= cfg["gw20_soc_max"]
+        and (s10 - s20) >= cfg["soc_gap"]
+    )
+
+
+def charge_pause_should_release(sample, cfg):
+    """While GW10 is charge-paused: release once GW20 caught up, filled up,
+    or the site started importing (no surplus left to redirect)."""
+    g10 = (sample.get("readings") or {}).get("gw10", {})
+    g20 = (sample.get("readings") or {}).get("gw20", {})
+    s10 = as_number(g10.get("battery_soc"))
+    s20 = as_number(g20.get("battery_soc"))
+    imp = grid_import_w(g20)
+    if imp is None:
+        imp = grid_import_w(g10)
+    if s10 is not None and s20 is not None and (s10 - s20) <= cfg["gap_release"]:
+        return True
+    if s20 is not None and s20 >= cfg["gw20_soc_done"]:
+        return True
+    if imp is not None and imp > cfg["import_release_w"]:
+        return True
+    return False
+
+
 def gw20_charging(sample, threshold_w=300):
     """True when GW20's battery is actively charging (the condition that causes the
     secondary to shuttle). Used to avoid restoring GW10 to AUTO too early."""
