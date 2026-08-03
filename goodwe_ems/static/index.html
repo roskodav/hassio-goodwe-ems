@@ -871,7 +871,7 @@
         banner.textContent = "⚖️ GW10 hltal PV přebytky a hlavní baterie GW20 hladověla → GW10 pauznut, přebytek teď nabíjí GW20. Uvolní se, až se GW20 dorovná.";
       } else if (ctl.dg_dispatch) {
         banner.className = "banner ok";
-        banner.textContent = "🌱 Delta Green aktivně řídí GW20 — naše asistence automaticky ustupují, anti-přelévání zůstává.";
+        banner.textContent = `🌱 Delta Green (Proteus) aktivně řídí GW20${ctl.gw20_power_limit ? ` — výkonový příkaz ${Math.round(ctl.gw20_power_limit)} W` : ""}. Naše asistence mu ustupují, GW10 mu uvolňuje PV přebytky.`;
       } else {
         banner.className = "banner";
       }
@@ -910,7 +910,9 @@
       document.getElementById("ctlEms").textContent = emsTxt;
       const dgEl = document.getElementById("ctlDg");
       if (dgEl) {
-        dgEl.textContent = ctl.dg_dispatch ? "🌱 AKTIVNÍ (řídí GW20)" : "neaktivní (čeká na aktivaci u DG)";
+        dgEl.textContent = ctl.dg_dispatch
+          ? `🌱 AKTIVNÍ — Proteus řídí GW20${ctl.gw20_power_limit ? ` (${Math.round(ctl.gw20_power_limit)} W)` : ""}`
+          : "klid (Proteus zrovna nezasahuje)";
         dgEl.style.color = ctl.dg_dispatch ? "var(--green)" : "var(--muted)";
       }
       document.getElementById("ctlWrites").textContent = data.status.write_count ?? 0;

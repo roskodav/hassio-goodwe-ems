@@ -87,8 +87,8 @@ def _entities(snap):
         ("binary_sensor.goodwe_ems_conflict", conflict,
          {"device_class": "problem", "friendly_name": "GoodWe EMS konflikt (přelévání baterií)"}),
         ("binary_sensor.goodwe_dg_dispatch", "on" if ctl.get("dg_dispatch") else "off",
-         {"friendly_name": "Delta Green dispatch aktivní", "icon": "mdi:leaf",
-          "gw20_ems_mode": ctl.get("gw20_ems_mode")}),
+         {"friendly_name": "Delta Green (Proteus) řídí GW20", "icon": "mdi:leaf",
+          "gw20_ems_mode": ctl.get("gw20_ems_mode"), "gw20_power_limit_w": ctl.get("gw20_power_limit")}),
         ("sensor.goodwe_ems_controller_state", str(ctl.get("state") or "monitoring"),
          {"friendly_name": "GoodWe EMS stav koordinátoru", "icon": "mdi:cog-sync"}),
         ("sensor.goodwe_ems_gw10_mode", ems_label,
@@ -161,10 +161,8 @@ def _maybe_notify(base, token, snap):
     _notify(base, token, "goodwe_ems_low_soc", "GoodWe EMS: nízké SOC baterie",
             "Některá baterie klesla pod 15 %.", low)
 
-    ctl = ((snap.get("control_plan") or {}).get("controller")) or {}
-    _notify(base, token, "goodwe_dg_dispatch", "Delta Green začal řídit GW20! 🎉",
-            "Detekován aktivní dispatch (GW20 ems_mode mimo AUTO). Assist a charge-balance automaticky ustupují.",
-            bool(ctl.get("dg_dispatch")))
+    # Note: no notification for DG dispatch — Proteus dispatches continuously,
+    # so a persistent notification would just be noise. The sensor carries it.
 
 
 def start(state, inverters=None):

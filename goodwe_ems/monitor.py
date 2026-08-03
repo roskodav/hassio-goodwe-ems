@@ -216,6 +216,7 @@ class MonitorState:
                 "state": "monitoring",
                 "gw10_ems_mode": None,
                 "gw20_ems_mode": None,
+                "gw20_power_limit": None,
                 "dg_dispatch": False,
                 "standby_since": None,
                 "charge_pause_since": None,
@@ -609,14 +610,21 @@ async def maybe_apply_control(samples, clients, apply_enabled, auto_restore):
             f"Could not read GW10 ems_mode: {type(exc).__name__}: {exc}",
         )
 
-    # Delta Green dispatch detection: read GW20's ems_mode ~once a minute
-    # (_cycle advances in monitor_loop). Non-AUTO means their box is actively
-    # commanding GW20 -> assist & charge-balance back off; anti-shuttle stays.
+    # Delta Green / Proteus dispatch detection (~once a minute; _cycle advances in
+    # monitor_loop). Proteus commands GW20 through `ems_power_limit` (a non-zero,
+    # continuously updated setpoint) while leaving ems_mode at AUTO — verified in
+    # the portal: its configured export limit (28 kW) and DoD (20 %) match GW20's
+    # registers exactly. A non-zero power limit therefore means it is dispatching.
     gw20_client = clients.get("gw20")
     if gw20_client and _cycle[0] % GW20_EMS_CHECK_EVERY == 0:
         try:
             gw20_mode = await read_ems_mode(gw20_client)
-            STATE.update_controller(gw20_ems_mode=gw20_mode, dg_dispatch=gw20_mode not in (None, GW10_AUTO))
+            try:
+                limit = as_number(await gw20_client.read_setting("ems_power_limit"))
+            except Exception:
+                limit = None
+            dispatching = (gw20_mode not in (None, GW10_AUTO)) or bool(limit)
+            STATE.update_controller(gw20_ems_mode=gw20_mode, gw20_power_limit=limit, dg_dispatch=dispatching)
         except Exception:
             pass
     dg_active = bool(STATE.controller_snapshot().get("dg_dispatch"))
